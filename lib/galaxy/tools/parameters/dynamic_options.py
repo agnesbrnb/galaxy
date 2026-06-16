@@ -954,22 +954,18 @@ class DynamicOptions:
             url = fill_template(from_url_options.from_url, context)
             request_body = template_or_none(from_url_options.request_body, context)
             request_headers = template_or_none(from_url_options.request_headers, context)
+            cache_key = (url, from_url_options.request_method, request_body, request_headers)
             try:
-                unset_value = object()
-                cached_value = trans.get_cache_value(
-                    (url, from_url_options.request_method, request_body, request_headers), unset_value
-                )
-                if cached_value is unset_value:
-                    data = request(
+                data = trans.get_or_set_cache_value(
+                    cache_key,
+                    lambda: request(
                         url=url,
                         method=from_url_options.request_method,
                         data=json.loads(request_body) if request_body else None,
                         headers=json.loads(request_headers) if request_headers else None,
                         timeout=10,
-                    )
-                    trans.set_cache_value((url, from_url_options.request_method, request_body, request_headers), data)
-                else:
-                    data = cached_value
+                    ),
+                )
             except Exception as e:
                 log.warning("Fetching from url '%s' failed: %s", url, str(e))
                 data = None
