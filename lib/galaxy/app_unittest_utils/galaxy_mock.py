@@ -5,7 +5,10 @@ Mock infrastructure for testing ModelManagers.
 import os
 import shutil
 import tempfile
-from collections.abc import Hashable
+from collections.abc import (
+    Callable,
+    Hashable,
+)
 from typing import (
     Any,
     cast,
@@ -356,6 +359,14 @@ class MockTrans:
 
     def get_cache_value(self, args: tuple[Hashable, ...], default: Any = None) -> Any:
         return self._short_term_cache.get(args, default)
+
+    def get_or_set_cache_value(self, args: tuple[Hashable, ...], factory: Callable[[], Any]) -> Any:
+        miss = object()
+        value = self.get_cache_value(args, miss)
+        if value is miss:
+            value = factory()
+            self.set_cache_value(args, value)
+        return value
 
     def check_csrf_token(self, payload):
         pass

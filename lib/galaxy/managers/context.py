@@ -193,6 +193,11 @@ class ProvidesAppContext:
         return self.app.install_model
 
 
+# Sentinel distinguishing a cached value (which may legitimately be ``None``)
+# from a cache miss in ``get_or_set_cache_value``.
+_CACHE_MISS: Any = object()
+
+
 class ProvidesUserContext(ProvidesAppContext):
     """For transaction-like objects to provide Galaxy convenience layer for
     reasoning about users.
@@ -211,6 +216,17 @@ class ProvidesUserContext(ProvidesAppContext):
 
     def get_cache_value(self, args: tuple[Hashable, ...], default: Any = None) -> Any:
         return self._short_term_cache.get(args, default)
+
+    def get_or_set_cache_value(self, args: tuple[Hashable, ...], factory: Callable[[], Any]) -> Any:
+        """Return the cached value for ``args``, computing and storing it via
+        ``factory`` on a miss. Request-scoped memoization for work repeated
+        within a single transaction (e.g. identical history-option queries
+        otherwise issued once per parameter while building a workflow Run form)."""
+        value = self.get_cache_value(args, _CACHE_MISS)
+        if value is _CACHE_MISS:
+            value = factory()
+            self.set_cache_value(args, value)
+        return value
 
     @property
     def tag_handler(self):
