@@ -291,6 +291,11 @@ class SSEConnectionManager:
         ``disconnect`` in ``finally``. The ``is_disconnected`` callable is
         what the service passes in (typically ``request.is_disconnected`` from
         starlette) so the manager stays framework-agnostic.
+
+        The request-scoped DB connection is released before this loop runs by
+        :class:`galaxy.webapps.base.api.GalaxyStreamingResponse`, which wraps
+        this generator — see that class for why long-lived streams must not
+        pin a pooled connection.
         """
         queue = self.connect(user_id, galaxy_session_id)
         if catch_up is not None:

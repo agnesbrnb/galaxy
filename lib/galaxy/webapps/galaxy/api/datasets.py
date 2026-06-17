@@ -41,7 +41,10 @@ from galaxy.schema.schema import (
     ToolReportForDataset,
 )
 from galaxy.util.zipstream import ZipstreamWrapper
-from galaxy.webapps.base.api import GalaxyFileResponse
+from galaxy.webapps.base.api import (
+    GalaxyFileResponse,
+    GalaxyStreamingResponse,
+)
 from galaxy.webapps.galaxy.api import (
     depends,
     DependsOnTrans,
@@ -376,12 +379,12 @@ class FastAPIDatasets:
             if file_name:
                 return GalaxyFileResponse(file_name, headers=headers)
         elif isinstance(display_data, ZipstreamWrapper):
-            return StreamingResponse(display_data.response(), headers=headers)
+            return GalaxyStreamingResponse(display_data.response(), headers=headers)
         elif isinstance(display_data, bytes):
-            return StreamingResponse(BytesIO(display_data), headers=headers)
+            return GalaxyStreamingResponse(BytesIO(display_data), headers=headers)
         elif isinstance(display_data, str):
-            return StreamingResponse(content=StringIO(display_data), headers=headers)
-        return StreamingResponse(display_data, headers=headers)
+            return GalaxyStreamingResponse(content=StringIO(display_data), headers=headers)
+        return GalaxyStreamingResponse(display_data, headers=headers)
 
     @router.get(
         "/api/histories/{history_id}/contents/{history_content_id}/metadata_file",

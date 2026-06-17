@@ -31,6 +31,7 @@ from galaxy.schema.schema import (
     SharingStatus,
     UpdatePagePayload,
 )
+from galaxy.webapps.base.api import GalaxyStreamingResponse
 from galaxy.webapps.galaxy.api import (
     depends,
     DependsOnTrans,
@@ -216,7 +217,7 @@ class FastAPIPages:
         This feature may not be available in this Galaxy.
         """
         pdf_bytes = self.service.show_pdf(trans, id)
-        return StreamingResponse(io.BytesIO(pdf_bytes), media_type="application/pdf")
+        return GalaxyStreamingResponse(io.BytesIO(pdf_bytes), media_type="application/pdf")
 
     @router.post(
         "/api/pages/{id}/prepare_download",

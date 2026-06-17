@@ -102,6 +102,7 @@ from galaxy.web import (
     expose_api_raw_anonymous_and_sessionless,
     format_return_as_json,
 )
+from galaxy.webapps.base.api import GalaxyStreamingResponse
 from galaxy.webapps.base.controller import (
     SharableMixin,
     url_for,
@@ -1617,7 +1618,7 @@ class FastAPIInvocations:
         trans: ProvidesUserContext = DependsOnTrans,
     ):
         wfi_report = self.invocations_service.show_invocation_report(trans, invocation_id, format="pdf")
-        return StreamingResponse(
+        return GalaxyStreamingResponse(
             content=BytesIO(wfi_report),
             media_type="application/pdf",
             headers={

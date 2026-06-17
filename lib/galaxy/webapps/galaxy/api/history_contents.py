@@ -69,6 +69,7 @@ from galaxy.schema.tasks import (
     CopyDatasetsPayload,
     CopyDatasetsResponse,
 )
+from galaxy.webapps.base.api import GalaxyStreamingResponse
 from galaxy.webapps.galaxy.api import (
     depends,
     DependsOnTrans,
@@ -1146,7 +1147,7 @@ class FastAPIHistoryContents:
         archive = self.service.archive(trans, history_id, filter_query_params, filename, dry_run)
         if isinstance(archive, HistoryContentsArchiveDryRunResult):
             return archive
-        return StreamingResponse(archive.response(), headers=archive.get_headers())
+        return GalaxyStreamingResponse(archive.response(), headers=archive.get_headers())
 
     @router.get(
         "/api/histories/{history_id}/contents/archive",
@@ -1166,7 +1167,7 @@ class FastAPIHistoryContents:
         archive = self.service.archive(trans, history_id, filter_query_params, filename, dry_run)
         if isinstance(archive, HistoryContentsArchiveDryRunResult):
             return archive
-        return StreamingResponse(archive.response(), headers=archive.get_headers())
+        return GalaxyStreamingResponse(archive.response(), headers=archive.get_headers())
 
     @router.post(
         "/api/histories/{history_id}/contents_from_store",
@@ -1225,4 +1226,4 @@ class FastAPIHistoryContents:
 
     def _download_collection(self, trans, id):
         archive = self.service.get_dataset_collection_archive_for_download(trans, id)
-        return StreamingResponse(archive.response(), headers=archive.get_headers())
+        return GalaxyStreamingResponse(archive.response(), headers=archive.get_headers())

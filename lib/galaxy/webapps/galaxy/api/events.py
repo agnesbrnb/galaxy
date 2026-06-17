@@ -18,6 +18,7 @@ from pydantic import BaseModel
 from starlette.responses import StreamingResponse
 
 from galaxy.managers.context import ProvidesUserContext
+from galaxy.webapps.base.api import GalaxyStreamingResponse
 from galaxy.webapps.galaxy.services.events import EventsService
 from . import (
     depends,
@@ -61,7 +62,7 @@ class FastAPIEvents:
 
         Anonymous users receive only broadcast events.
         """
-        return StreamingResponse(
+        return GalaxyStreamingResponse(
             self.service.open_stream(trans, last_event_id, request.is_disconnected),
             media_type="text/event-stream",
             headers={

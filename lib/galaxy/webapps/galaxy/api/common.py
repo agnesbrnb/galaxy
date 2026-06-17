@@ -29,6 +29,7 @@ from galaxy.schema.schema import (
     UpdateDatasetPermissionsPayloadAliases,
 )
 from galaxy.util import listify
+from galaxy.webapps.base.api import GalaxyStreamingResponse
 
 FolderIdPathParam = Annotated[
     LibraryFolderDatabaseIdField,
@@ -298,7 +299,7 @@ def query_parameter_as_list(query):
 
 def serve_workbook(content: BytesIO, filename: Optional[str]) -> StreamingResponse:
     filename = filename or "galaxy_sample_sheet_workbook.xlsx"
-    return StreamingResponse(
+    return GalaxyStreamingResponse(
         content,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f"attachment; filename={filename}"},

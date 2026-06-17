@@ -18,10 +18,7 @@ from fastapi import (
     Query,
     Request,
 )
-from fastapi.responses import (
-    JSONResponse,
-    StreamingResponse,
-)
+from fastapi.responses import JSONResponse
 from openai import (
     APIError,
     AsyncOpenAI,
@@ -51,6 +48,7 @@ from galaxy.model import (
 from galaxy.schema.fields import DecodedDatabaseIdField
 from galaxy.schema.visualization import VisualizationPluginResponse
 from galaxy.structured_app import StructuredApp
+from galaxy.webapps.base.api import GalaxyStreamingResponse
 from galaxy.webapps.galaxy.api import (
     depends,
     DependsOnApp,
@@ -134,6 +132,7 @@ class FastAPIPlugins:
         request: Request,
         payload: ChatCompletionRequest = Body(...),
         user: User = DependsOnUser,
+        trans: SessionRequestContext = DependsOnTrans,
         plugin_name: str = Path(
             ...,
             title="Plugin Name",
@@ -150,7 +149,7 @@ class FastAPIPlugins:
             plugin_specs = plugin and plugin.config.get("specs")
             plugin_ai_prompt = plugin_specs and plugin_specs.get("ai_prompt")
             if plugin_ai_prompt:
-                return await self._open_ai_adapter(payload, plugin_ai_prompt, plugin_name)
+                return await self._open_ai_adapter(trans, payload, plugin_ai_prompt, plugin_name)
             else:
                 return self._create_error("Selected plugin has no AI prompt.")
         else:
@@ -183,6 +182,7 @@ class FastAPIPlugins:
 
     async def _open_ai_adapter(
         self,
+        trans: SessionRequestContext,
         payload: ChatCompletionRequest,
         prompt: str,
         plugin_name: str,
@@ -259,6 +259,15 @@ class FastAPIPlugins:
             log.debug("Failed to initialize OpenAI client.", exc_info=e)
             return self._create_error("Failed to initialize OpenAI client.", 500)
 
+        # Release the request-scoped DB session before the (potentially long)
+        # upstream call. All DB work for this request is done; proxying to the AI
+        # provider and streaming its response back never touches the database, so
+        # holding the pooled connection open for the whole exchange would needlessly
+        # pin a connection per in-flight chat request. This covers the upstream
+        # call itself, which happens here in the handler before GalaxyStreamingResponse
+        # gets a chance to release at stream start.
+        trans.sa_session().close()
+
         # Connect to ai provider
         log.info(f"Proxying to {ai_model}, tokens: {max_tokens}.")
         try:
@@ -290,7 +299,7 @@ class FastAPIPlugins:
                 finally:
                     await client.close()
 
-            return StreamingResponse(
+            return GalaxyStreamingResponse(
                 generate(),
                 media_type="text/event-stream",
                 headers={
