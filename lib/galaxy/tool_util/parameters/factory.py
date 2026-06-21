@@ -103,7 +103,9 @@ def _from_input_source_galaxy(input_source: InputSource, profile: float) -> Tool
             optional = input_source.parse_optional()
             value = input_source.get("value")
             int_value: Optional[int]
-            if value:
+            # ``not in (None, "")`` rather than truthiness so a ``0`` default is kept -- a
+            # plain ``if value:`` treated 0 as unset and fell through to the error below.
+            if value not in (None, ""):
                 int_value = int(value)
             elif optional:
                 int_value = None
@@ -162,7 +164,8 @@ def _from_input_source_galaxy(input_source: InputSource, profile: float) -> Tool
             optional = input_source.parse_optional()
             value = input_source.get("value")
             float_value: Optional[float]
-            if value:
+            # See the integer note above: ``not in (None, "")`` keeps a ``0.0`` default.
+            if value not in (None, ""):
                 float_value = float(value)
             elif optional:
                 float_value = None

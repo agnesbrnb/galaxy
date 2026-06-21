@@ -4283,3 +4283,35 @@ cwl_directory:
    - parameter: true
    - parameter: 5
    - parameter: "5"
+
+
+# Regression for the parameter factory accepting a 0 / 0.0 default (gx_int_zero.yml /
+# gx_float_zero.yml). Building these bundles used to raise ParameterDefinitionError.
+gx_int_zero_y:
+  request_valid:
+    - parameter: 0
+    - parameter: 5
+    # default (0) is used, so the request may omit it
+    - {}
+  request_invalid:
+    - parameter: "0"
+    - parameter: null
+  job_internal_valid:
+    - parameter: 0
+  test_case_xml_valid:
+    - parameter: 0
+    - {}
+
+gx_float_zero_y:
+  request_valid:
+    - parameter: 0.0
+    - parameter: 2.5
+    - {}
+  request_invalid:
+    - parameter: "0.0"
+    - parameter: null
+  job_internal_valid:
+    - parameter: 0.0
+  test_case_xml_valid:
+    - parameter: 0.0
+    - {}
