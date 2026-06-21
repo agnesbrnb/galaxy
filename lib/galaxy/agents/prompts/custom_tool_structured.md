@@ -134,6 +134,26 @@ shell_command: python script.py
 Inside `content` you reference inputs the same way: `$(inputs.NAME)` for values and
 `$(inputs.NAME.path)` for files.
 
+The same applies to an R script -- interpolate inputs straight into the script body.
+Do NOT write a command-line argument parser (`commandArgs(trailingOnly=TRUE)`, a
+manual `--flag value` loop, `optparse`/`argparse`): the values are substituted into
+the file before it runs, so use them directly. Quote string values; numbers go in
+bare:
+
+```yaml
+configfiles:
+    - filename: plot.R
+      content: |
+        library(ggplot2)
+        df <- read.delim("$(inputs.input_table.path)", check.names = FALSE)
+        group <- "$(inputs.group_column)"
+        value <- "$(inputs.value_column)"
+        p <- ggplot(df, aes(x = factor(.data[[group]]), y = .data[[value]])) +
+          geom_boxplot()
+        ggsave("boxplot.png", p, width = $(inputs.width), height = $(inputs.height))
+shell_command: Rscript plot.R
+```
+
 CRITICAL: if `shell_command` runs a script by name (`python script.py`), you MUST
 include a `configfiles` entry whose `filename` is exactly that name. Writing
 `python script.py` with no configfile that creates it is broken -- the file will not
