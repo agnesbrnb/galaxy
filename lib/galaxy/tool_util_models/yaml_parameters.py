@@ -158,7 +158,24 @@ class YamlTextParameter(_YamlParamBase):
 
 class YamlSelectParameter(_YamlParamBase):
     type: Literal["select"]
-    options: Annotated[List[YamlLabelValue], Field(min_length=1)]
+    options: Annotated[
+        List[YamlLabelValue],
+        Field(
+            min_length=1,
+            description=(
+                "Dropdown options. Each option is an object with ``label`` (shown to the user) and "
+                "``value`` (passed to the command); mark the default with ``selected: true``. A select "
+                "has no top-level ``value`` field."
+            ),
+            examples=[
+                [
+                    {"label": "Auto-detect", "value": "auto", "selected": True},
+                    {"label": "Comma", "value": "comma"},
+                    {"label": "Tab", "value": "tab"},
+                ]
+            ],
+        ),
+    ]
     multiple: bool = False
     validators: List[YamlSelectValidators] = []
 
