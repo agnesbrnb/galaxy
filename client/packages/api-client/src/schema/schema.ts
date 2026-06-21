@@ -265,6 +265,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/chat/stream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Query Stream
+         * @description **Warning**: This API is unstable and may change without notice.
+         */
+        post: operations["query_stream_api_chat_stream_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/chat/{job_id}/feedback": {
         parameters: {
             query?: never;
@@ -27568,7 +27588,25 @@ export interface components {
              * @default false
              */
             optional: boolean;
-            /** Options */
+            /**
+             * Options
+             * @description Dropdown options. Each option is an object with ``label`` (shown to the user) and ``value`` (passed to the command); mark the default with ``selected: true``. A select has no top-level ``value`` field.
+             * @example [
+             *       {
+             *         "label": "Auto-detect",
+             *         "selected": true,
+             *         "value": "auto"
+             *       },
+             *       {
+             *         "label": "Comma",
+             *         "value": "comma"
+             *       },
+             *       {
+             *         "label": "Tab",
+             *         "value": "tab"
+             *       }
+             *     ]
+             */
             options: components["schemas"]["YamlLabelValue"][];
             /**
              * @description discriminator enum property added by openapi-typescript
@@ -31731,6 +31769,54 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ChatHistoryItemResponse"][];
+                };
+            };
+            /** @description Request Error */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MessageExceptionModel"];
+                };
+            };
+            /** @description Server Error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MessageExceptionModel"];
+                };
+            };
+        };
+    };
+    query_stream_api_chat_stream_post: {
+        parameters: {
+            query?: {
+                /** @description Agent type to use for the query */
+                agent_type?: string;
+            };
+            header?: {
+                /** @description The user ID that will be used to effectively make this API call. Only admins and designated users can make API calls on behalf of other users. */
+                "run-as"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChatPayload"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
             /** @description Request Error */
