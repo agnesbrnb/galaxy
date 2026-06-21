@@ -2033,6 +2033,62 @@ def _quay_recommendation(
     )
 
 
+class TestCustomToolProgressDetail:
+    """The static helpers that render a step's expandable SSE ``detail`` blob.
+
+    These format the intermediate artifacts (critique, container pick) the
+    streaming endpoint attaches to ``AgentProgressEvent.detail`` so the frontend
+    can show them collapsed under each step.
+    """
+
+    def test_format_validation_detail_includes_draft_and_issues(self):
+        detail = CustomToolAgent._format_validation_detail(["id is required"], "class: GalaxyUserTool\nname: x\n")
+        assert detail is not None
+        assert "Issues to fix:" in detail
+        assert "- id is required" in detail
+        assert "First draft (rejected):" in detail
+        assert "class: GalaxyUserTool" in detail
+
+    def test_format_validation_detail_none_when_empty(self):
+        assert CustomToolAgent._format_validation_detail([], None) is None
+
+    def test_format_critique_detail_lists_both_issue_kinds(self):
+        critique = CritiqueReport(
+            clarity_issues=["Help text is vague"],
+            idiomaticity_issues=["Default should be 0"],
+        )
+        detail = CustomToolAgent._format_critique_detail(critique)
+        assert detail is not None
+        assert "Clarity issues:" in detail
+        assert "- Help text is vague" in detail
+        assert "Idiomaticity issues:" in detail
+        assert "- Default should be 0" in detail
+
+    def test_format_critique_detail_none_when_critic_failed(self):
+        # A failed critic call yields no critique -> no detail to show.
+        assert CustomToolAgent._format_critique_detail(None) is None
+
+    def test_format_critique_detail_reports_clean_review(self):
+        detail = CustomToolAgent._format_critique_detail(CritiqueReport())
+        assert detail == "No clarity or idiomaticity issues found."
+
+    def test_format_container_detail_applied(self):
+        packages = [CondaPackage(name="samtools", version="1.17")]
+        recommendation = _quay_recommendation("quay.io/biocontainers/samtools:1.17--h00cdaf9_0")
+        detail = CustomToolAgent._format_container_detail(packages, recommendation, applied=True)
+        assert "Inferred packages: samtools=1.17" in detail
+        assert "quay.io/biocontainers/samtools:1.17--h00cdaf9_0" in detail
+        assert "Match quality: exact_version" in detail
+        assert "Applied: yes" in detail
+
+    def test_format_container_detail_not_found(self):
+        packages = [CondaPackage(name="madeuptool")]
+        recommendation = _quay_recommendation(None, match_quality=MatchQuality.NOT_FOUND)
+        detail = CustomToolAgent._format_container_detail(packages, recommendation, applied=False)
+        assert "Inferred packages: madeuptool" in detail
+        assert "No verified biocontainer found" in detail
+
+
 class TestCustomToolAgentReflection:
     """Tests for CustomToolAgent's validator-retry and quality-critic loops.
 

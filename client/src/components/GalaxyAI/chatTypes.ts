@@ -21,6 +21,10 @@ export interface ChatMessage {
     agentResponse?: AgentResponse;
     suggestions?: ActionSuggestion[];
     isSystemMessage?: boolean;
+    /** Step-level progress events that carried an intermediate artifact (produced
+     * YAML, critique, container pick). Kept on the finished message so the user can
+     * still expand them after the live progress list is gone. */
+    steps?: AgentProgressEvent[];
 }
 
 export interface ChatHistoryItem {

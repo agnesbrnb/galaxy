@@ -307,9 +307,7 @@ class QueryRouterAgent(BaseGalaxyAgent):
         """Execute a handoff to a specialist agent."""
         handoff_target = target_agent or agent_type
         log.info(f"Router handing off to {handoff_target}: '{input_text[:100]}...'")
-        await self.emit_progress(
-            "routing", f"Handing off to {self._handoff_label(handoff_target)}…", detail=handoff_target
-        )
+        await self.emit_progress("routing", f"Handing off to {self._handoff_label(handoff_target)}…")
         try:
             agent = ctx.deps.get_agent(agent_type, ctx.deps)
             handoff_context = self._handoff_context.copy() if self._handoff_context else {}

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { faCheck, faCircleNotch, faMagic, faTimes, faTrash } from "@fortawesome/free-solid-svg-icons";
+import { faMagic, faTimes, faTrash } from "@fortawesome/free-solid-svg-icons";
 import { FontAwesomeIcon } from "@fortawesome/vue-fontawesome";
 import { BSkeleton } from "bootstrap-vue";
 import { computed, nextTick, onMounted, ref, watch } from "vue";
@@ -11,11 +11,7 @@ import { useConfirmDialog } from "@/composables/confirmDialog";
 import { useMarkdown } from "@/composables/markdown";
 import { useToast } from "@/composables/toast";
 import { useActiveContext } from "@/composables/useActiveContext";
-import {
-    type AgentStreamPayload,
-    type ChatStreamResponse,
-    streamAgentQuery,
-} from "@/composables/useAgentStream";
+import { type AgentStreamPayload, type ChatStreamResponse, streamAgentQuery } from "@/composables/useAgentStream";
 import { buildEntityContext, parseMentions, resolveMentions } from "@/composables/useEntityMentions";
 import { usePageProposals } from "@/composables/usePageProposals";
 import { useChatStore } from "@/stores/chatStore";
@@ -23,9 +19,11 @@ import { usePageEditorStore } from "@/stores/pageEditorStore";
 import { errorMessageAsString } from "@/utils/simple-error";
 
 import { getAgentIcon } from "./GalaxyAI/agentTypes";
+import { recallSteps, rememberSteps } from "./GalaxyAI/chatSteps";
 import type { AgentProgressEvent, ChatHistoryItem, ChatMessage } from "./GalaxyAI/chatTypes";
 import { generateId, scrollToBottom } from "./GalaxyAI/chatUtils";
 
+import AgentProgressSteps from "./GalaxyAI/AgentProgressSteps.vue";
 import ChatActions from "./GalaxyAI/ChatActions.vue";
 import ChatInput from "./GalaxyAI/ChatInput.vue";
 import ChatMessageCell from "./GalaxyAI/ChatMessageCell.vue";
@@ -267,7 +265,17 @@ async function applyChatResult(data: ChatStreamResponse) {
         feedback: null,
         agentResponse: agentResponse,
         suggestions: agentResponse?.suggestions || [],
+        // Keep the whole completed step checklist on the finished message (the
+        // live list is cleared next) so it stays available -- with its expandable
+        // artifacts -- after the turn.
+        steps: progressSteps.value.length ? progressSteps.value.map((step) => ({ ...step })) : undefined,
     };
+    // In center/route mode this component is remounted (and the conversation
+    // refetched from the server, which has no steps) once the new exchange id
+    // lands in the route; stash the steps so the rebuild can re-attach them.
+    if (data.exchange_id && assistantMessage.steps) {
+        rememberSteps(data.exchange_id, assistantMessage.steps);
+    }
     messages.value.push(assistantMessage);
 
     await nextTick();
@@ -488,6 +496,16 @@ async function fetchConversation(exchangeId: string) {
         return message;
     });
 
+    // Re-attach the step checklist stashed for this exchange (lost on the
+    // route-driven remount) to the latest assistant turn so it stays available.
+    const cachedSteps = recallSteps(exchangeId);
+    if (cachedSteps) {
+        const lastAssistant = [...messages.value].reverse().find((m) => m.role === "assistant");
+        if (lastAssistant) {
+            lastAssistant.steps = cachedSteps;
+        }
+    }
+
     currentChatId.value = exchangeId;
     nextTick(() => scrollToBottom(chatContainer.value));
 
@@ -665,22 +683,7 @@ watch(currentChatId, async (newId) => {
                     </span>
                 </div>
                 <!-- Live step list once the agent starts reporting progress; skeleton until then. -->
-                <div v-if="progressSteps.length" class="loading-body progress-steps">
-                    <div
-                        v-for="step in progressSteps"
-                        :key="step.step"
-                        class="progress-step"
-                        :class="{ 'progress-step-done': step.status === 'done' }"
-                    >
-                        <FontAwesomeIcon
-                            :icon="step.status === 'done' ? faCheck : faCircleNotch"
-                            :spin="step.status !== 'done'"
-                            fixed-width
-                            class="progress-step-icon"
-                        />
-                        <span class="progress-step-label">{{ step.label }}</span>
-                    </div>
-                </div>
+                <AgentProgressSteps v-if="progressSteps.length" :steps="progressSteps" live />
                 <div v-else class="loading-body">
                     <BSkeleton animation="wave" width="85%" />
                     <BSkeleton animation="wave" width="55%" />
@@ -830,37 +833,6 @@ watch(currentChatId, async (newId) => {
 .loading-body {
     flex: 1;
     opacity: 0.6;
-}
-
-// Live step list shown while a multi-step agent turn is in progress.
-.progress-steps {
-    opacity: 1;
-    display: flex;
-    flex-direction: column;
-    gap: 0.35rem;
-    padding-top: 0.125rem;
-}
-
-.progress-step {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    font-size: 0.85rem;
-    color: $text-color;
-    animation: fadeIn 0.2s ease-out;
-}
-
-.progress-step-icon {
-    color: $brand-primary;
-    font-size: 0.75rem;
-}
-
-.progress-step-done {
-    color: $text-muted;
-
-    .progress-step-icon {
-        color: $brand-success;
-    }
 }
 
 @keyframes fadeIn {

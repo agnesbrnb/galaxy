@@ -388,7 +388,14 @@ class CustomToolAgent(BaseGalaxyAgent):
                 )
                 if produced.prior_yaml:
                     log.debug("CustomTool: rejected first attempt:\n%s", produced.prior_yaml)
-                await self.emit_progress("validating", "Fixing validation issues…")
+                # Surface the rejected first draft and the issues being fixed so the
+                # user can see the draft while the retry is still running (the
+                # ``producing`` done event below only carries the *final* YAML).
+                await self.emit_progress(
+                    "validating",
+                    "Fixing validation issues…",
+                    detail=self._format_validation_detail(produced.errors, produced.prior_yaml),
+                )
                 # Thread the prior attempt (when we have it) so the retry prompt can
                 # anchor the error list to the YAML the model actually produced.
                 retried = await self._produce_tool(query, retry_errors=produced.errors, prior_yaml=produced.prior_yaml)
@@ -413,7 +420,7 @@ class CustomToolAgent(BaseGalaxyAgent):
                 tool, tool_yaml, result = retried
             else:
                 tool, tool_yaml, result = produced
-            await self.emit_progress("producing", "Tool definition generated", status="done")
+            await self.emit_progress("producing", "Tool definition generated", status="done", detail=tool_yaml)
 
             # Quality critic: clarity/idiomaticity only (container is resolved below).
             # The critic supplies the fixes, not just the diagnosis:
@@ -424,7 +431,12 @@ class CustomToolAgent(BaseGalaxyAgent):
             if self._quality_critic_enabled():
                 await self.emit_progress("critiquing", "Reviewing for quality…")
                 critique = await self._run_critic(tool_yaml, query)
-                await self.emit_progress("critiquing", "Quality review complete", status="done")
+                await self.emit_progress(
+                    "critiquing",
+                    "Quality review complete",
+                    status="done",
+                    detail=self._format_critique_detail(critique),
+                )
                 if critique is not None and critique.needs_full_refine:
                     log.info(
                         "CustomTool: critic requested full refine (%d clarity / %d idiomaticity issues)",
@@ -433,7 +445,7 @@ class CustomToolAgent(BaseGalaxyAgent):
                     )
                     await self.emit_progress("refining", "Refining based on review feedback…")
                     tool, tool_yaml, result = await self._full_refine(query, critique, tool, tool_yaml, result)
-                    await self.emit_progress("refining", "Refinement complete", status="done")
+                    await self.emit_progress("refining", "Refinement complete", status="done", detail=tool_yaml)
                 elif critique is not None and critique.edits:
                     patched = self._apply_edits(tool, critique.edits)
                     if patched is not None:
@@ -446,7 +458,7 @@ class CustomToolAgent(BaseGalaxyAgent):
                         log.info("CustomTool: critic edits not applicable; falling back to full refine")
                         await self.emit_progress("refining", "Refining based on review feedback…")
                         tool, tool_yaml, result = await self._full_refine(query, critique, tool, tool_yaml, result)
-                        await self.emit_progress("refining", "Refinement complete", status="done")
+                        await self.emit_progress("refining", "Refinement complete", status="done", detail=tool_yaml)
 
             # Container selection (opt-in, critic-independent). The producer prompt
             # says nothing about images; instead a dedicated container critic infers
@@ -584,6 +596,64 @@ class CustomToolAgent(BaseGalaxyAgent):
         sections.append("Original request (for reference):\n\n" + query)
         return "\n\n".join(sections)
 
+    @staticmethod
+    def _format_validation_detail(errors: list[str], prior_yaml: Optional[str]) -> Optional[str]:
+        """Render the rejected first draft + its issues as the validating step ``detail``.
+
+        Returns None when there's nothing to show (no errors and no captured draft).
+        """
+        sections: list[str] = []
+        if errors:
+            sections.append("Issues to fix:\n" + "\n".join(f"- {error}" for error in errors))
+        if prior_yaml:
+            sections.append("First draft (rejected):\n\n" + prior_yaml)
+        return "\n\n".join(sections) or None
+
+    @staticmethod
+    def _format_critique_detail(critique: Optional[CritiqueReport]) -> Optional[str]:
+        """Render a critique as the expandable ``detail`` for the critiquing step.
+
+        Returns None when the critic call failed (no event detail to show);
+        a plain "no issues" line when it ran but flagged nothing.
+        """
+        if critique is None:
+            return None
+        lines: list[str] = []
+        if critique.clarity_issues:
+            lines.append("Clarity issues:")
+            lines.extend(f"- {issue}" for issue in critique.clarity_issues)
+        if critique.idiomaticity_issues:
+            if lines:
+                lines.append("")
+            lines.append("Idiomaticity issues:")
+            lines.extend(f"- {issue}" for issue in critique.idiomaticity_issues)
+        if not lines:
+            return "No clarity or idiomaticity issues found."
+        return "\n".join(lines)
+
+    @staticmethod
+    def _format_container_detail(
+        packages: Sequence[CondaPackage],
+        recommendation: ContainerRecommendation,
+        applied: bool,
+    ) -> str:
+        """Render the container lookup as the expandable ``detail`` for the container step."""
+        pkg_str = ", ".join(f"{p.name}{('=' + p.version) if p.version else ''}" for p in packages)
+        lines = [f"Inferred packages: {pkg_str}"]
+        if recommendation.image:
+            lines.append(f"Recommended image: {recommendation.image}")
+            lines.append(f"Match quality: {recommendation.match_quality.value}")
+            if applied:
+                lines.append("Applied: yes (replaced the authored container).")
+            else:
+                lines.append("Applied: no (kept the authored container).")
+        else:
+            lines.append("No verified biocontainer found; kept the authored container.")
+        if recommendation.notes:
+            lines.append("")
+            lines.extend(f"- {note}" for note in recommendation.notes)
+        return "\n".join(lines)
+
     async def _run_critic(self, tool_yaml: str, query: str) -> Optional[CritiqueReport]:
         """Run the quality critic. Returns None if the critic call fails."""
         critic = self._get_critic_agent()
@@ -684,11 +754,20 @@ class CustomToolAgent(BaseGalaxyAgent):
         if not self._container_recommendation_enabled():
             return tool, tool_yaml
 
+        await self.emit_progress("container", "Selecting a verified container…")
         packages = await self._infer_packages(tool)
         if not packages:
+            await self.emit_progress(
+                "container",
+                "Container selection complete",
+                status="done",
+                detail="Could not infer packages from the command; kept the authored container.",
+            )
             return tool, tool_yaml
 
         recommendation = await self._lookup_container(packages)
+        applied = False
+        resolved = tool, tool_yaml
         if (
             recommendation.image is not None
             and self._container_differs(tool.container, recommendation.image)
@@ -697,8 +776,15 @@ class CustomToolAgent(BaseGalaxyAgent):
             rewritten = self._rewrite_container(tool, recommendation.image)
             if rewritten is not None:
                 log.info("CustomTool: rewrote container to verified biocontainer %s", recommendation.image)
-                return rewritten
-        return tool, tool_yaml
+                applied = True
+                resolved = rewritten
+        await self.emit_progress(
+            "container",
+            "Container selection complete",
+            status="done",
+            detail=self._format_container_detail(packages, recommendation, applied),
+        )
+        return resolved
 
     async def _infer_packages(self, tool: UserToolSource) -> list[CondaPackage]:
         """Infer the tool's conda packages via the dedicated container critic.

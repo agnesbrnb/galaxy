@@ -10,6 +10,7 @@ import { formatModelName, getAgentIcon, getAgentLabel, getAgentResponseOrEmpty }
 import type { ChatMessage } from "./chatTypes";
 
 import ActionCard from "./ActionCard.vue";
+import AgentProgressSteps from "./AgentProgressSteps.vue";
 import ClarificationCard from "./ClarificationCard.vue";
 
 const MENTION_RE = new RegExp(MENTION_PATTERN_SOURCE, "g");
@@ -98,6 +99,14 @@ const clarificationOptions = computed<string[]>(() => props.message.agentRespons
                     <!-- eslint-disable-next-line vue/no-v-html -->
                     <div v-else class="response-content" v-html="props.renderMarkdown(props.message.content)" />
 
+                    <!-- How the answer was built: the completed step checklist kept from
+                         the live turn. Collapsed by default so it doesn't crowd the answer;
+                         the user can expand it (and each step's artifact) to look back. -->
+                    <details v-if="props.message.steps?.length" class="message-steps">
+                        <summary>Steps</summary>
+                        <AgentProgressSteps :steps="props.message.steps" />
+                    </details>
+
                     <ActionCard
                         v-if="!isClarification && props.message.suggestions?.length"
                         :suggestions="props.message.suggestions"
@@ -147,6 +156,23 @@ const clarificationOptions = computed<string[]>(() => props.message.agentRespons
 
 <style lang="scss" scoped>
 @import "@/style/scss/theme/blue.scss";
+
+.message-steps {
+    margin-top: 0.5rem;
+
+    > summary {
+        cursor: pointer;
+        font-size: 0.8rem;
+        color: $text-muted;
+        user-select: none;
+    }
+
+    // Indent the checklist under the disclosure once expanded.
+    > .progress-steps {
+        margin-top: 0.4rem;
+        margin-left: 0.25rem;
+    }
+}
 
 .exchange-entry {
     animation: entryReveal 0.25s ease-out both;

@@ -11,9 +11,8 @@
  * terminal `event: done`.
  */
 import type { components } from "@/api/schema";
-import { withPrefix } from "@/utils/redirect";
-
 import type { AgentProgressEvent } from "@/components/GalaxyAI/chatTypes";
+import { withPrefix } from "@/utils/redirect";
 
 export type ChatStreamResponse = components["schemas"]["ChatResponse"];
 
