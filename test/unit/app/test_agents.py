@@ -1546,6 +1546,7 @@ class TestAgentUnitMocked:
             self.mock_trans,
             self.mock_user,
             {"page_id": 42, "page_content": "# My Page"},
+            progress_callback=None,
         )
         assert result is sentinel
 

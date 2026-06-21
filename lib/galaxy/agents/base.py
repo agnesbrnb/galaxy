@@ -12,6 +12,7 @@ from abc import (
     abstractmethod,
 )
 from collections.abc import (
+    Awaitable,
     Callable,
     Sequence,
 )
@@ -35,6 +36,7 @@ from galaxy.model import User
 from galaxy.schema.agents import (
     ActionSuggestion,
     ActionType,
+    AgentProgressEvent,
     ConfidenceLevel,
 )
 
@@ -368,6 +370,10 @@ class GalaxyAgentDependencies:
     tool_cache: Optional["ToolCache"] = None
     toolbox: Optional["ToolBox"] = None
     model_factory: Optional[Callable[[], Any]] = None
+    # Optional async sink for step-level progress events. Set by the streaming
+    # chat endpoint; left None for the regular (blocking) request path, in which
+    # case emit_progress is a no-op.
+    progress_callback: Optional[Callable[[AgentProgressEvent], Awaitable[None]]] = None
 
 
 class BaseGalaxyAgent(ABC):
@@ -398,6 +404,33 @@ class BaseGalaxyAgent(ABC):
             raise NotImplementedError(f"{self.__class__.__name__} must define 'agent_type' class attribute")
 
         self.agent = self._create_agent()
+
+    async def emit_progress(
+        self,
+        step: str,
+        label: str,
+        status: str = "start",
+        detail: Optional[str] = None,
+    ) -> None:
+        """Emit a step-level progress event if a sink is wired into the deps.
+
+        No-op on the regular blocking request path (no callback), so agents can
+        call this unconditionally without caring whether the turn is streaming.
+        """
+        # ``deps`` is always set on real agents; StaticAgent allows None in unit
+        # tests, so guard the value (not the attribute).
+        callback = self.deps.progress_callback if self.deps is not None else None
+        if callback is None:
+            return
+        await callback(
+            AgentProgressEvent(
+                step=step,
+                label=label,
+                status=status,
+                agent_type=self.agent_type,
+                detail=detail,
+            )
+        )
 
     @abstractmethod
     def _create_agent(self) -> Agent[GalaxyAgentDependencies, Any]:

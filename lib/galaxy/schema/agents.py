@@ -72,6 +72,21 @@ class AgentResponse(BaseModel):
     reasoning: Optional[str] = Field(default=None, description="Explanation of the agent's reasoning")
 
 
+class AgentProgressEvent(BaseModel):
+    """A step-level progress update emitted while an agent processes a turn.
+
+    Streamed to the client over SSE so a multi-step turn (e.g. the custom tool
+    producer -> validator -> critic -> refine loop) shows live status instead of
+    a single blocking spinner.
+    """
+
+    step: str = Field(description="Stable machine key for the step, e.g. 'producing', 'critiquing', 'refining'")
+    label: str = Field(description="Human-readable status, e.g. 'Generating tool definition…'")
+    status: str = Field(default="start", description="Lifecycle of the step: 'start', 'done', 'skip' or 'error'")
+    agent_type: str = Field(description="Type of agent that emitted this event")
+    detail: Optional[str] = Field(default=None, description="Optional extra detail for the step")
+
+
 class AgentQueryRequest(BaseModel):
     """Request to query an AI agent.
 

@@ -18,6 +18,7 @@ from fastapi import (
     Body,
     Path,
     Query,
+    Request,
 )
 from pydantic import Field
 
@@ -27,13 +28,16 @@ from galaxy.exceptions import (
     MessageException,
     ObjectNotFound,
 )
-from galaxy.managers.agents import AgentService
+from galaxy.managers.agents import (
+    AgentService,
+)
 from galaxy.managers.chat import ChatManager
 from galaxy.managers.context import ProvidesUserContext
 from galaxy.managers.jobs import JobManager
-from galaxy.managers.markdown_util import ready_galaxy_markdown_for_export
 from galaxy.managers.workflows import WorkflowsManager
-from galaxy.model import User
+from galaxy.model import (
+    User,
+)
 from galaxy.schema.agents import (
     AgentResponse,
     WorkflowReportResponse,
@@ -46,12 +50,14 @@ from galaxy.schema.schema import (
     ChatResponse,
 )
 from galaxy.util.json import safe_loads
+from galaxy.webapps.base.api import GalaxyStreamingResponse
 from galaxy.webapps.galaxy.api import (
     depends,
     DependsOnTrans,
     DependsOnUser,
     Router,
 )
+from galaxy.webapps.galaxy.services.chat import ChatService
 
 # Import agent system
 try:
@@ -117,6 +123,7 @@ class ChatAPI:
     chat_manager: ChatManager = depends(ChatManager)
     job_manager: JobManager = depends(JobManager)
     agent_service: AgentService = depends(AgentService)
+    chat_service: ChatService = depends(ChatService)
     workflow_manager: WorkflowsManager = depends(WorkflowsManager)
 
     @router.post("/api/chat", unstable=True)
@@ -202,47 +209,9 @@ class ChatAPI:
 
         try:
             if HAS_AGENTS:
-                full_context: dict[str, Any] = query_context.copy() if query_context else {}
-
-                # Export page content (encodes IDs) so the agent sees the same
-                # text the editor has -- hashes and proposals match the client.
-                if page_id:
-                    full_context["page_id"] = page_id
-                    if page_obj:
-                        full_context["history_id"] = page_obj.history_id
-                        if not full_context.get("history_id"):
-                            session_history = getattr(trans, "history", None)
-                            if session_history:
-                                full_context["history_id"] = session_history.id
-                                full_context["history_is_session"] = True
-                        if page_obj.latest_revision_id:
-                            rev = page_obj.latest_revision
-                            if rev and rev.content:
-                                exported, _, _ = ready_galaxy_markdown_for_export(trans, rev.content)
-                                full_context["page_content"] = exported
-                            else:
-                                full_context["page_content"] = ""
-                        else:
-                            full_context["page_content"] = ""
-
-                # DB is the source of truth for history; use structured pydantic-ai
-                # format so the router passes it as ``message_history`` rather than
-                # flattening into a text blob.
-                if exchange_id:
-                    # One fetch yields both the history and whether the previous turn asked a
-                    # clarifying question -- when it did, the router re-includes that turn so it
-                    # can route this (otherwise elliptical) answer instead of withholding history.
-                    db_history, responding_to_clarification = await anyio.to_thread.run_sync(
-                        partial(self.chat_manager.get_routing_history, trans, exchange_id)
-                    )
-                    full_context["conversation_history"] = db_history or []
-                    full_context["responding_to_clarification"] = responding_to_clarification
-                else:
-                    full_context["conversation_history"] = []
-
-                if payload and payload.entity_context:
-                    full_context["entities"] = payload.entity_context.model_dump(exclude_none=True)
-
+                full_context = await self.chat_service.build_full_context(
+                    trans, query_context, page_id, page_obj, exchange_id, payload
+                )
                 agent_response = await self._get_agent_response_full(
                     query_text, agent_type, trans, user, job, full_context
                 )
@@ -254,52 +223,20 @@ class ChatAPI:
                 answer = await self._get_ai_response(query_text, trans, context_type)
                 result["response"] = answer
 
-            if job:
-                exchange = await anyio.to_thread.run_sync(
-                    partial(self.chat_manager.create, trans, job.id, str(result["response"]))
-                )
-                result["exchange_id"] = exchange.id
-            elif trans.user:
-                if exchange_id:
-                    agent_resp = result.get("agent_response")
-                    conversation_data = {
-                        "query": query_text,
-                        "response": result.get("response", ""),
-                        "agent_type": agent_resp.agent_type if agent_resp else agent_type,
-                        "agent_response": agent_resp.model_dump() if agent_resp else None,
-                    }
-                    message_content = json.dumps(conversation_data)
-                    await anyio.to_thread.run_sync(
-                        partial(self.chat_manager.add_message, trans, exchange_id, message_content)
-                    )
-                    result["exchange_id"] = exchange_id
-                elif page_id:
-                    agent_resp = result.get("agent_response")
-                    storable_result = {
-                        "response": result.get("response", ""),
-                        "agent_response": agent_resp.model_dump() if agent_resp else None,
-                    }
-                    exchange = self.chat_manager.create_page_chat(
-                        trans, page_id, query_text, storable_result, agent_resp.agent_type if agent_resp else agent_type
-                    )
-                    result["exchange_id"] = exchange.id
-                else:
-                    agent_resp = result.get("agent_response")
-                    storable_result = {
-                        "response": result.get("response", ""),
-                        "agent_response": agent_resp.model_dump() if agent_resp else None,
-                    }
-                    exchange = await anyio.to_thread.run_sync(
-                        partial(
-                            self.chat_manager.create_general_chat,
-                            trans,
-                            query_text,
-                            storable_result,
-                            agent_resp.agent_type if agent_resp else agent_type,
-                        )
-                    )
-                    result["exchange_id"] = exchange.id
-
+            # Store the resolved agent (e.g. the specialist the router handed off
+            # to) rather than the requested "auto", so history shows what answered.
+            agent_resp = result.get("agent_response")
+            stored_agent_type = agent_resp.agent_type if agent_resp else agent_type
+            result["exchange_id"] = await self.chat_service.persist_exchange(
+                trans,
+                job,
+                exchange_id,
+                page_id,
+                query_text,
+                stored_agent_type,
+                str(result["response"]),
+                agent_resp,
+            )
             result["processing_time"] = time.time() - start_time
 
         except Exception as e:
@@ -311,6 +248,77 @@ class ChatAPI:
 
         # Return the enhanced response structure
         return ChatResponse(**result)
+
+    @router.post("/api/chat/stream", unstable=True)
+    async def query_stream(
+        self,
+        request: Request,
+        payload: ChatPayload,
+        agent_type: str = Query(default="auto", description="Agent type to use for the query"),
+        trans: ProvidesUserContext = DependsOnTrans,
+        user: User = DependsOnUser,
+    ) -> GalaxyStreamingResponse:
+        """Streaming variant of ``/api/chat`` (**BETA**).
+
+        Returns ``text/event-stream`` so a multi-step agent turn can report
+        step-level progress (``event: progress``) while it runs, followed by a
+        single ``event: result`` carrying the same ``ChatResponse`` the blocking
+        endpoint returns, and a terminal ``event: done``.
+
+        The controller stays thin: it parses the request, materializes the agent
+        context up front (so no DB read happens once the body streams), and hands
+        the SSE generator to ``GalaxyStreamingResponse``. The queue/keepalive
+        orchestration lives in ``ChatService.stream_turn`` (mirroring
+        ``EventsService.open_stream``).
+        """
+        if not HAS_AGENTS:
+            raise ConfigurationError("The AI agent system is not available in this Galaxy configuration.")
+        if not payload.query:
+            raise MessageException("No query provided")
+
+        query_text = payload.query
+        query_context: dict[str, Any] = {}
+        if payload.context:
+            parsed = safe_loads(payload.context)
+            if isinstance(parsed, dict):
+                query_context = {"interface_context": parsed}
+            else:
+                query_context = {"context_type": payload.context}
+
+        exchange_id = payload.exchange_id or None
+
+        page_id = payload.page_id or None
+        page_obj = None
+        if page_id:
+            # Access-check up front so a 403 propagates before streaming starts.
+            page_obj = self.chat_manager.get_accessible_page(trans, page_id)
+        else:
+            page_id, page_obj = self.chat_manager.resolve_page_from_interface_context(trans, query_context)
+
+        # Materialize everything the agent needs BEFORE constructing the streaming
+        # response -- no DB reads may happen once the body starts streaming.
+        full_context = await self.chat_service.build_full_context(
+            trans, query_context, page_id, page_obj, exchange_id, payload
+        )
+
+        return GalaxyStreamingResponse(
+            self.chat_service.stream_turn(
+                trans=trans,
+                user=user,
+                query_text=query_text,
+                agent_type=agent_type,
+                full_context=full_context,
+                exchange_id=exchange_id,
+                page_id=page_id,
+                is_disconnected=request.is_disconnected,
+            ),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
     @router.get("/api/chat/history", unstable=True)
     def get_chat_history(

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { faMagic, faTimes, faTrash } from "@fortawesome/free-solid-svg-icons";
+import { faCheck, faCircleNotch, faMagic, faTimes, faTrash } from "@fortawesome/free-solid-svg-icons";
 import { FontAwesomeIcon } from "@fortawesome/vue-fontawesome";
 import { BSkeleton } from "bootstrap-vue";
 import { computed, nextTick, onMounted, ref, watch } from "vue";
@@ -11,6 +11,11 @@ import { useConfirmDialog } from "@/composables/confirmDialog";
 import { useMarkdown } from "@/composables/markdown";
 import { useToast } from "@/composables/toast";
 import { useActiveContext } from "@/composables/useActiveContext";
+import {
+    type AgentStreamPayload,
+    type ChatStreamResponse,
+    streamAgentQuery,
+} from "@/composables/useAgentStream";
 import { buildEntityContext, parseMentions, resolveMentions } from "@/composables/useEntityMentions";
 import { usePageProposals } from "@/composables/usePageProposals";
 import { useChatStore } from "@/stores/chatStore";
@@ -18,7 +23,7 @@ import { usePageEditorStore } from "@/stores/pageEditorStore";
 import { errorMessageAsString } from "@/utils/simple-error";
 
 import { getAgentIcon } from "./GalaxyAI/agentTypes";
-import type { ChatHistoryItem, ChatMessage } from "./GalaxyAI/chatTypes";
+import type { AgentProgressEvent, ChatHistoryItem, ChatMessage } from "./GalaxyAI/chatTypes";
 import { generateId, scrollToBottom } from "./GalaxyAI/chatUtils";
 
 import ChatActions from "./GalaxyAI/ChatActions.vue";
@@ -108,6 +113,9 @@ const isRouteMode = computed(() => chatStore.isCenterMode && !props.compact && r
 const query = ref("");
 const messages = ref<ChatMessage[]>([]);
 const busy = ref(false);
+// Step-level progress for the in-flight turn, shown in place of the skeleton
+// while the agent works (producer -> validator -> critic -> refine, etc.).
+const progressSteps = ref<AgentProgressEvent[]>([]);
 const chatContainer = ref<HTMLElement>();
 const selectedAgentType = ref("auto");
 const currentChatId = ref<string | null>(null);
@@ -116,6 +124,8 @@ const hasLoadedInitialChat = ref(false);
 // Bumped whenever the displayed conversation changes so that responses still in
 // flight for a previous conversation can be recognized as stale and dropped.
 let conversationGeneration = 0;
+// Aborts the in-flight SSE stream when the conversation changes out from under it.
+let activeStreamController: AbortController | null = null;
 
 const { renderMarkdown } = useMarkdown({ openLinksInNewPage: true, removeNewlinesAfterList: true });
 const { processingAction, handleAction } = useAgentActions();
@@ -222,6 +232,62 @@ function showWelcome() {
     });
 }
 
+/** Record a streamed progress event. Steps run sequentially, so any earlier
+ * step still marked "start" is implicitly finished when a new event arrives. */
+function recordProgress(event: AgentProgressEvent) {
+    const steps = progressSteps.value.map((step) =>
+        step.status === "start" ? { ...step, status: "done" as const } : step,
+    );
+    const index = steps.findIndex((step) => step.step === event.step);
+    if (index === -1) {
+        steps.push(event);
+    } else {
+        steps[index] = event;
+    }
+    progressSteps.value = steps;
+}
+
+/** Render a successful chat result (from either the stream or the fallback). */
+async function applyChatResult(data: ChatStreamResponse) {
+    const agentResponse = data.agent_response as AgentResponse | undefined;
+    const content = data.response || "No response received";
+
+    if (data.exchange_id) {
+        currentChatId.value = data.exchange_id;
+    }
+
+    const assistantMessage: ChatMessage = {
+        id: generateId(),
+        role: "assistant",
+        content: content,
+        timestamp: new Date(),
+        agentType:
+            agentResponse?.agent_type || (selectedAgentType.value === "auto" ? "router" : selectedAgentType.value),
+        confidence: agentResponse?.confidence || "medium",
+        feedback: null,
+        agentResponse: agentResponse,
+        suggestions: agentResponse?.suggestions || [],
+    };
+    messages.value.push(assistantMessage);
+
+    await nextTick();
+    scrollToBottom(chatContainer.value);
+}
+
+async function pushAssistantError(content: string) {
+    messages.value.push({
+        id: generateId(),
+        role: "assistant",
+        content,
+        timestamp: new Date(),
+        agentType: selectedAgentType.value,
+        confidence: "low",
+        feedback: null,
+    });
+    await nextTick();
+    scrollToBottom(chatContainer.value);
+}
+
 async function submitQuery() {
     if (!query.value.trim()) {
         return;
@@ -243,97 +309,92 @@ async function submitQuery() {
     scrollToBottom(chatContainer.value);
 
     busy.value = true;
+    progressSteps.value = [];
     const generation = conversationGeneration;
     // False once the conversation changes while we're waiting (e.g. the user
     // started a new chat) — stale responses must not touch the current one.
     const stillCurrent = () => generation === conversationGeneration;
+
+    const controller = new AbortController();
+    activeStreamController = controller;
 
     try {
         const parsed = parseMentions(currentQuery);
         const resolved = resolveMentions(parsed);
         const entityContext = buildEntityContext(resolved);
 
-        const { data, error } = await GalaxyApi().POST("/api/chat", {
-            params: {
-                query: {
-                    agent_type: selectedAgentType.value,
+        const payload: AgentStreamPayload = {
+            query: currentQuery,
+            context: effectiveContext.value ? JSON.stringify(effectiveContext.value) : null,
+            exchange_id: currentChatId.value,
+            entity_context: entityContext as Record<string, unknown> | null,
+        };
+
+        let result: ChatStreamResponse | null = null;
+        try {
+            await streamAgentQuery(
+                selectedAgentType.value,
+                payload,
+                {
+                    onProgress: (event) => {
+                        if (stillCurrent()) {
+                            recordProgress(event);
+                        }
+                    },
+                    onResult: (data) => {
+                        result = data;
+                    },
                 },
-            },
-            body: {
-                query: currentQuery,
-                context: effectiveContext.value ? JSON.stringify(effectiveContext.value) : null,
-                exchange_id: currentChatId.value,
-                entity_context: entityContext,
-            },
-        });
+                controller.signal,
+            );
+        } catch (streamError) {
+            if (controller.signal.aborted) {
+                return; // Superseded by a newer conversation — drop silently.
+            }
+            // Streaming unavailable (older server, proxy buffering, etc.) — fall
+            // back to the blocking endpoint so behavior degrades to the old path.
+            console.warn("Chat streaming failed, falling back to /api/chat:", streamError);
+            const { data, error } = await GalaxyApi().POST("/api/chat", {
+                params: { query: { agent_type: selectedAgentType.value } },
+                body: {
+                    query: currentQuery,
+                    context: payload.context,
+                    exchange_id: currentChatId.value,
+                    entity_context: entityContext,
+                },
+            });
+            if (!stillCurrent()) {
+                return;
+            }
+            if (error) {
+                await pushAssistantError(
+                    `Error: ${errorMessageAsString(error, "Failed to get response from GalaxyAI.")}`,
+                );
+                return;
+            }
+            result = (data as ChatStreamResponse) ?? null;
+        }
 
         if (!stillCurrent()) {
             return;
         }
-
-        if (error) {
-            const errorText = errorMessageAsString(error, "Failed to get response from GalaxyAI.");
-            const errorMsg: ChatMessage = {
-                id: generateId(),
-                role: "assistant",
-                content: `Error: ${errorText}`,
-                timestamp: new Date(),
-                agentType: selectedAgentType.value,
-                confidence: "low",
-                feedback: null,
-            };
-            messages.value.push(errorMsg);
-
-            await nextTick();
-            scrollToBottom(chatContainer.value);
-        } else if (data) {
-            const agentResponse = data.agent_response as AgentResponse | undefined;
-            const content = data.response || "No response received";
-
-            if (data.exchange_id) {
-                currentChatId.value = data.exchange_id;
-            }
-
-            const assistantMessage: ChatMessage = {
-                id: generateId(),
-                role: "assistant",
-                content: content,
-                timestamp: new Date(),
-                agentType:
-                    agentResponse?.agent_type ||
-                    (selectedAgentType.value === "auto" ? "router" : selectedAgentType.value),
-                confidence: agentResponse?.confidence || "medium",
-                feedback: null,
-                agentResponse: agentResponse,
-                suggestions: agentResponse?.suggestions || [],
-            };
-            messages.value.push(assistantMessage);
-
-            await nextTick();
-            scrollToBottom(chatContainer.value);
+        if (result) {
+            await applyChatResult(result);
         }
     } catch (e) {
         console.error("Unexpected chat error:", e);
         if (stillCurrent()) {
-            const errorMsg: ChatMessage = {
-                id: generateId(),
-                role: "assistant",
-                content: "Unexpected error occurred. Please try again.",
-                timestamp: new Date(),
-                agentType: selectedAgentType.value,
-                confidence: "low",
-                feedback: null,
-            };
-            messages.value.push(errorMsg);
-
-            await nextTick();
-            scrollToBottom(chatContainer.value);
+            await pushAssistantError("Unexpected error occurred. Please try again.");
         }
     } finally {
+        if (activeStreamController === controller) {
+            activeStreamController = null;
+        }
         // Only clear the busy indicator if it still belongs to this request — the
         // current conversation may have its own request in flight by now.
         if (stillCurrent()) {
             busy.value = false;
+            progressSteps.value = [];
             await nextTick();
             scrollToBottom(chatContainer.value);
         }
@@ -382,6 +443,7 @@ async function fetchConversation(exchangeId: string) {
     }
 
     const generation = ++conversationGeneration;
+    activeStreamController?.abort();
 
     const { data: fullConversation, error } = await GalaxyApi().GET(`/api/chat/exchange/{exchange_id}/messages`, {
         params: {
@@ -454,8 +516,10 @@ async function loadLatestChat() {
 
 function startNewChat() {
     conversationGeneration++;
+    activeStreamController?.abort();
     hasLoadedInitialChat.value = true;
     busy.value = false;
+    progressSteps.value = [];
     messages.value = [
         {
             id: generateId(),
@@ -600,7 +664,24 @@ watch(currentChatId, async (newId) => {
                         <FontAwesomeIcon :icon="getAgentIcon(selectedAgentType)" fixed-width />
                     </span>
                 </div>
-                <div class="loading-body">
+                <!-- Live step list once the agent starts reporting progress; skeleton until then. -->
+                <div v-if="progressSteps.length" class="loading-body progress-steps">
+                    <div
+                        v-for="step in progressSteps"
+                        :key="step.step"
+                        class="progress-step"
+                        :class="{ 'progress-step-done': step.status === 'done' }"
+                    >
+                        <FontAwesomeIcon
+                            :icon="step.status === 'done' ? faCheck : faCircleNotch"
+                            :spin="step.status !== 'done'"
+                            fixed-width
+                            class="progress-step-icon"
+                        />
+                        <span class="progress-step-label">{{ step.label }}</span>
+                    </div>
+                </div>
+                <div v-else class="loading-body">
                     <BSkeleton animation="wave" width="85%" />
                     <BSkeleton animation="wave" width="55%" />
                     <BSkeleton animation="wave" width="70%" />
@@ -749,6 +830,37 @@ watch(currentChatId, async (newId) => {
 .loading-body {
     flex: 1;
     opacity: 0.6;
+}
+
+// Live step list shown while a multi-step agent turn is in progress.
+.progress-steps {
+    opacity: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    padding-top: 0.125rem;
+}
+
+.progress-step {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.85rem;
+    color: $text-color;
+    animation: fadeIn 0.2s ease-out;
+}
+
+.progress-step-icon {
+    color: $brand-primary;
+    font-size: 0.75rem;
+}
+
+.progress-step-done {
+    color: $text-muted;
+
+    .progress-step-icon {
+        color: $brand-success;
+    }
 }
 
 @keyframes fadeIn {

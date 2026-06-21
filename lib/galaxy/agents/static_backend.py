@@ -36,12 +36,16 @@ class StaticAgent(BaseGalaxyAgent):
         rules: list[dict[str, Any]],
         fallback: dict[str, Any],
         defaults: dict[str, Any],
+        deps: Optional[GalaxyAgentDependencies] = None,
     ):
         # Intentionally skip super().__init__() — no pydantic-ai Agent needed.
+        # ``deps`` is optional so unit tests can construct a StaticAgent directly;
+        # when provided it carries the progress_callback used by emit_progress.
         self.agent_type = agent_type_str
         self._rules = rules
         self._fallback = fallback
         self._defaults = defaults
+        self.deps = deps
 
     def _create_agent(self):
         raise NotImplementedError("StaticAgent does not use pydantic-ai")
@@ -50,10 +54,16 @@ class StaticAgent(BaseGalaxyAgent):
         return ""
 
     async def process(self, query: str, context: Optional[dict[str, Any]] = None) -> AgentResponse:
+        # Emit a deterministic progress step so the streaming path is exercised
+        # end-to-end against the static backend (no-op when not streaming).
+        await self.emit_progress("responding", "Generating response…")
+        response = self._make_response(self._fallback)
         for rule in self._rules:
             if self._rule_matches(rule.get("match", {}), query, context):
-                return self._make_response(rule["response"])
-        return self._make_response(self._fallback)
+                response = self._make_response(rule["response"])
+                break
+        await self.emit_progress("responding", "Response ready", status="done")
+        return response
 
     def _rule_matches(self, match: dict[str, Any], query: str, context: Optional[dict[str, Any]]) -> bool:
         if "agent_type" in match and match["agent_type"] != self.agent_type:
@@ -105,7 +115,7 @@ class StaticAgentRegistry(AgentRegistry):
     def get_agent(self, agent_type: str, deps: GalaxyAgentDependencies) -> StaticAgent:
         """Return a StaticAgent that matches rules for this agent_type."""
         applicable = [r for r in self._rules if r.get("match", {}).get("agent_type", agent_type) == agent_type]
-        return StaticAgent(agent_type, applicable, self._fallback, self._defaults)
+        return StaticAgent(agent_type, applicable, self._fallback, self._defaults, deps=deps)
 
     def is_registered(self, agent_type: str) -> bool:
         return agent_type in self._known_types or bool(self._fallback)

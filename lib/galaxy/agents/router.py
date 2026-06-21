@@ -304,6 +304,9 @@ class QueryRouterAgent(BaseGalaxyAgent):
         """Execute a handoff to a specialist agent."""
         handoff_target = target_agent or agent_type
         log.info(f"Router handing off to {handoff_target}: '{input_text[:100]}...'")
+        await self.emit_progress(
+            "routing", f"Handing off to {self._handoff_label(handoff_target)}…", detail=handoff_target
+        )
         try:
             agent = ctx.deps.get_agent(agent_type, ctx.deps)
             handoff_context = self._handoff_context.copy() if self._handoff_context else {}
@@ -318,6 +321,20 @@ class QueryRouterAgent(BaseGalaxyAgent):
         except OSError as e:
             log.error(f"{handoff_target} handoff failed: {e}")
             return f"I encountered an issue ({type(e).__name__}). Please try again or contact support."
+
+    # User-facing names for the routing progress event. Falls back to a
+    # de-underscored title-case of the agent type for anything not listed.
+    _HANDOFF_LABELS = {
+        AgentType.ERROR_ANALYSIS: "error analysis",
+        AgentType.CUSTOM_TOOL: "the custom tool builder",
+        AgentType.TOOL_RECOMMENDATION: "tool recommendations",
+        AgentType.HISTORY: "the history specialist",
+        AgentType.GTN_TRAINING: "training help",
+        AgentType.ORCHESTRATOR: "the workflow orchestrator",
+    }
+
+    def _handoff_label(self, agent_type: str) -> str:
+        return self._HANDOFF_LABELS.get(agent_type, agent_type.replace("_", " "))
 
     def _create_error_analysis_handoff(self):
         async def hand_off_to_error_analysis(

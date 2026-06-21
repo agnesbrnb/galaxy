@@ -1,6 +1,10 @@
 """Agent service layer for AI agent management."""
 
 import logging
+from collections.abc import (
+    Awaitable,
+    Callable,
+)
 from typing import (
     Any,
     Optional,
@@ -13,7 +17,13 @@ from galaxy.config import GalaxyAppConfiguration
 from galaxy.managers.context import ProvidesUserContext
 from galaxy.managers.jobs import JobManager
 from galaxy.model import User
-from galaxy.schema.agents import AgentResponse
+from galaxy.schema.agents import (
+    AgentProgressEvent,
+    AgentResponse,
+)
+
+#: Async sink for step-level progress events streamed during a turn.
+ProgressCallback = Callable[[AgentProgressEvent], Awaitable[None]]
 
 log = logging.getLogger(__name__)
 
@@ -31,7 +41,12 @@ class AgentService:
         self.job_manager = job_manager
         self.registry = registry
 
-    def create_dependencies(self, trans: ProvidesUserContext, user: User) -> GalaxyAgentDependencies:
+    def create_dependencies(
+        self,
+        trans: ProvidesUserContext,
+        user: User,
+        progress_callback: Optional[ProgressCallback] = None,
+    ) -> GalaxyAgentDependencies:
         """Create agent dependencies for dependency injection."""
         toolbox = trans.app.toolbox if hasattr(trans, "app") and hasattr(trans.app, "toolbox") else None
         return GalaxyAgentDependencies(
@@ -42,6 +57,7 @@ class AgentService:
             toolbox=toolbox,
             get_agent=self.registry.get_agent,
             get_capability_blurb=self.registry.get_capability_blurb,
+            progress_callback=progress_callback,
         )
 
     async def execute_agent(
@@ -51,9 +67,10 @@ class AgentService:
         trans: ProvidesUserContext,
         user: User,
         context: Optional[dict[str, Any]] = None,
+        progress_callback: Optional[ProgressCallback] = None,
     ) -> AgentResponse:
         """Execute a specific agent and return response."""
-        deps = self.create_dependencies(trans, user)
+        deps = self.create_dependencies(trans, user, progress_callback=progress_callback)
 
         if context is None:
             context = {}
@@ -101,6 +118,7 @@ class AgentService:
         user: User,
         context: Optional[dict[str, Any]] = None,
         agent_type: str = "auto",
+        progress_callback: Optional[ProgressCallback] = None,
     ) -> AgentResponse:
         """
         Execute query with automatic routing or specific agent.
@@ -110,18 +128,22 @@ class AgentService:
         """
         if agent_type == "auto" and isinstance(context, dict) and context.get("page_id"):
             log.info("Routing to page_assistant for notebook context")
-            return await self.execute_agent("page_assistant", query, trans, user, context)
+            return await self.execute_agent(
+                "page_assistant", query, trans, user, context, progress_callback=progress_callback
+            )
         elif agent_type == "auto":
             # Router handles everything via output functions:
             # - Answers general questions directly
             # - Hands off to error_analysis for debugging
             # - Hands off to custom_tool for tool creation
             log.info(f"Processing query via router: '{query[:100]}...'")
-            return await self.execute_agent("router", query, trans, user, context)
+            return await self.execute_agent("router", query, trans, user, context, progress_callback=progress_callback)
         else:
             # Explicit agent request - execute directly
             log.info(f"User explicitly requested agent: {agent_type}")
-            return await self.execute_agent(agent_type, query, trans, user, context)
+            return await self.execute_agent(
+                agent_type, query, trans, user, context, progress_callback=progress_callback
+            )
 
     def list_agents(self) -> list[str]:
         return self.registry.list_agents()

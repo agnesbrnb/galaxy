@@ -348,6 +348,7 @@ class CustomToolAgent(BaseGalaxyAgent):
 
         try:
             attempts = 1
+            await self.emit_progress("producing", "Generating tool definition…")
             produced = await self._produce_tool(query)
             if produced is None:
                 return self._invalid_structured_output_response(query)
@@ -368,6 +369,7 @@ class CustomToolAgent(BaseGalaxyAgent):
                 )
                 if produced.prior_yaml:
                     log.debug("CustomTool: rejected first attempt:\n%s", produced.prior_yaml)
+                await self.emit_progress("validating", "Fixing validation issues…")
                 # Thread the prior attempt (when we have it) so the retry prompt can
                 # anchor the error list to the YAML the model actually produced.
                 retried = await self._produce_tool(query, retry_errors=produced.errors, prior_yaml=produced.prior_yaml)
@@ -392,6 +394,7 @@ class CustomToolAgent(BaseGalaxyAgent):
                 tool, tool_yaml, result = retried
             else:
                 tool, tool_yaml, result = produced
+            await self.emit_progress("producing", "Tool definition generated", status="done")
 
             # Quality critic: clarity/idiomaticity only (container is resolved below).
             # The critic supplies the fixes, not just the diagnosis:
@@ -400,14 +403,18 @@ class CustomToolAgent(BaseGalaxyAgent):
             #   - a structural change (``needs_full_refine``) or a patch that fails to
             #     apply/validate falls back to a full producer re-roll.
             if self._quality_critic_enabled():
+                await self.emit_progress("critiquing", "Reviewing for quality…")
                 critique = await self._run_critic(tool_yaml, query)
+                await self.emit_progress("critiquing", "Quality review complete", status="done")
                 if critique is not None and critique.needs_full_refine:
                     log.info(
                         "CustomTool: critic requested full refine (%d clarity / %d idiomaticity issues)",
                         len(critique.clarity_issues),
                         len(critique.idiomaticity_issues),
                     )
+                    await self.emit_progress("refining", "Refining based on review feedback…")
                     tool, tool_yaml, result = await self._full_refine(query, critique, tool, tool_yaml, result)
+                    await self.emit_progress("refining", "Refinement complete", status="done")
                 elif critique is not None and critique.edits:
                     patched = self._apply_edits(tool, critique.edits)
                     if patched is not None:
@@ -418,7 +425,9 @@ class CustomToolAgent(BaseGalaxyAgent):
                         )
                     else:
                         log.info("CustomTool: critic edits not applicable; falling back to full refine")
+                        await self.emit_progress("refining", "Refining based on review feedback…")
                         tool, tool_yaml, result = await self._full_refine(query, critique, tool, tool_yaml, result)
+                        await self.emit_progress("refining", "Refinement complete", status="done")
 
             # Container selection (opt-in, critic-independent). The producer prompt
             # says nothing about images; instead a dedicated container critic infers
