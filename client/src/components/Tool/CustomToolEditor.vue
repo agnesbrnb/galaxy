@@ -8,7 +8,7 @@ import editorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
 import jsonWorker from "monaco-editor/esm/vs/language/json/json.worker?worker";
 import tsWorker from "monaco-editor/esm/vs/language/typescript/ts.worker?worker";
 import yamlWorker from "monaco-yaml/yaml.worker?worker";
-import { nextTick, onUnmounted, ref, watch } from "vue";
+import { computed, nextTick, onUnmounted, ref, watch } from "vue";
 import { useRouter } from "vue-router/composables";
 import { parse, stringify } from "yaml";
 
@@ -22,6 +22,7 @@ import { useUnprivilegedToolStore } from "@/stores/unprivilegedToolStore";
 
 import { setupMonaco } from "./YamlJs";
 
+import ButtonSpinner from "@/components/Common/ButtonSpinner.vue";
 import Heading from "@/components/Common/Heading.vue";
 
 // Configure Monaco environment with worker factory before loading
@@ -86,6 +87,9 @@ outputs:
   - name: output1
     type: data`;
 const yamlRepresentation = ref<string>(defaultYaml);
+// The YAML as last persisted/loaded, used to tell whether the editor is dirty.
+// Null until the tool has been saved or an existing one loaded.
+const savedYaml = ref<string | null>(null);
 
 if (props.toolUuid) {
     GalaxyApi()
@@ -101,29 +105,64 @@ if (props.toolUuid) {
                 yamlRepresentation.value = stringify(data.representation, {
                     blockQuote: "literal",
                 });
+                savedYaml.value = yamlRepresentation.value;
             }
         });
 }
 
-async function saveTool() {
+// A user tool can only be run once it's stored. The current uuid comes from a
+// just-saved tool or the one being edited; Run is unavailable until a save exists.
+const currentUuid = computed(() => persistedTool.value?.uuid ?? props.toolUuid);
+// A save is still needed when there's no stored tool yet, or the editor has
+// unsaved edits relative to the last save/load.
+const saveNeeded = computed(() => !currentUuid.value || yamlRepresentation.value !== savedYaml.value);
+
+/** Persist the current YAML as an unprivileged tool. Returns the saved tool on
+ * success, or undefined (and sets ``errorMsg``) on invalid YAML or an API error.
+ * Shared by Save (-> editor) and Run (-> tool form). */
+async function persistTool(): Promise<UnprivilegedToolResponse | undefined> {
     if (!yamlRepresentation.value) {
         console.error("No yaml to parse");
-        return;
+        return undefined;
+    }
+    let representation;
+    try {
+        representation = parse(yamlRepresentation.value);
+    } catch (err) {
+        errorMsg.value = { err_code: -1, err_msg: `Invalid YAML: ${err}` };
+        return undefined;
     }
     const payload: DynamicUnprivilegedToolCreatePayload = {
         active: true,
         hidden: false,
-        representation: parse(yamlRepresentation.value),
+        representation,
         src: "representation",
     };
     const { data, error } = await GalaxyApi().POST("/api/unprivileged_tools", { body: payload });
     if (error) {
         errorMsg.value = error;
-    } else {
-        persistedTool.value = data;
-        unprivilegedToolStore.load(true);
+        return undefined;
+    }
+    persistedTool.value = data;
+    savedYaml.value = yamlRepresentation.value;
+    unprivilegedToolStore.load(true);
+    return data;
+}
+
+async function saveTool() {
+    const data = await persistTool();
+    if (data) {
         router.push(`/tools/editor/${data.uuid}`);
     }
+}
+
+// Run is pure navigation: the tool must already be saved (Run is disabled while a
+// save is needed), so just open its run form (Home renders ToolForm for ``tool_uuid``).
+function runTool() {
+    if (saveNeeded.value || !currentUuid.value) {
+        return;
+    }
+    router.push({ path: "/", query: { tool_uuid: currentUuid.value } });
 }
 
 async function importFromUrl() {
@@ -225,6 +264,13 @@ async function generateViaLLM() {
                 @click="saveTool"
                 ><FontAwesomeIcon :icon="faSave"
             /></b-button>
+            <ButtonSpinner
+                title="Run Tool"
+                data-description="run custom tool"
+                size="small"
+                :disabled="saveNeeded"
+                :tooltip="saveNeeded ? 'Save the tool before running' : 'Run Tool'"
+                @onClick="runTool" />
         </div>
         <VueMonacoEditor
             v-model="yamlRepresentation"
