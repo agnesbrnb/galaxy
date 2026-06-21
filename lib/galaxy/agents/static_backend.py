@@ -45,7 +45,7 @@ class StaticAgent(BaseGalaxyAgent):
         self._rules = rules
         self._fallback = fallback
         self._defaults = defaults
-        self.deps = deps
+        self.deps = deps  # type: ignore[assignment]  # StaticAgent allows None deps (see comment above)
 
     def _create_agent(self):
         raise NotImplementedError("StaticAgent does not use pydantic-ai")
