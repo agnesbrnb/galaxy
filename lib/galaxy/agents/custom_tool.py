@@ -692,7 +692,7 @@ class CustomToolAgent(BaseGalaxyAgent):
         if (
             recommendation.image is not None
             and self._container_differs(tool.container, recommendation.image)
-            and await self._should_override_container(tool.container, recommendation.match_quality)
+            and await self._should_override_container(tool.container, recommendation, packages)
         ):
             rewritten = self._rewrite_container(tool, recommendation.image)
             if rewritten is not None:
@@ -733,28 +733,59 @@ class CustomToolAgent(BaseGalaxyAgent):
         specs = [PackageSpec(p.name, p.version) for p in packages]
         return await asyncio.to_thread(self._recommender, specs)
 
-    async def _should_override_container(self, current: Optional[str], match_quality: MatchQuality) -> bool:
+    async def _should_override_container(
+        self,
+        current: Optional[str],
+        recommendation: ContainerRecommendation,
+        packages: Sequence[CondaPackage],
+    ) -> bool:
         """Decide whether to deterministically replace ``current`` with the recommendation.
 
         An ``EXACT_VERSION`` match always wins. A ``NAME_ONLY`` match wins unless
-        ``current`` is a *verified-present* biocontainer (a deliberate, working pin
-        we respect). So it overrides both a broken biocontainer tag AND an image
-        that isn't a biocontainer at all (``rocker/...``, ``ubuntu``, ...) -- when
-        container resolution is on, a verified biocontainer is preferred over an
-        arbitrary registry image.
+        ``current`` is a *verified-present* biocontainer that actually provides the
+        inferred packages (a deliberate, working pin we respect). So it overrides:
+
+        - an image that isn't a biocontainer at all (``rocker/...``, ``ubuntu``, ...),
+        - a broken biocontainer tag, and
+        - a present biocontainer for the *wrong* package -- e.g. a producer that
+          picked ``r-base`` for a tool that needs ``r-ggplot2``/``r-readr`` (the
+          base image is a real biocontainer but doesn't contain the packages, so a
+          name-only recommendation that does is preferable).
         """
-        if match_quality == MatchQuality.EXACT_VERSION:
+        if recommendation.match_quality == MatchQuality.EXACT_VERSION:
             return True
-        if match_quality == MatchQuality.NAME_ONLY:
+        if recommendation.match_quality == MatchQuality.NAME_ONLY:
             if not self._is_biocontainer_ref(current):
                 return True
-            return await self._container_tag_missing(current)
+            if await self._container_tag_missing(current):
+                return True
+            return not self._biocontainer_covers_packages(current, packages)
         return False
 
     @staticmethod
     def _is_biocontainer_ref(container: Optional[str]) -> bool:
         """True if ``container`` is a ``quay.io/biocontainers`` image reference."""
         return container is not None and container.strip().startswith(f"{QUAY_BIOCONTAINERS_PREFIX}/")
+
+    @staticmethod
+    def _biocontainer_covers_packages(container: Optional[str], packages: Sequence[CondaPackage]) -> bool:
+        """True if the single-package biocontainer ``container`` is for one of ``packages``.
+
+        A single-package biocontainer embeds the package name in the path
+        (``quay.io/biocontainers/<name>:<tag>``), so it "covers" the requirement
+        only when ``<name>`` is one of the inferred packages. A ``mulled-`` image is
+        a deliberate multi-package build whose contents can't be read from the name,
+        so it's treated as covering (don't override a real multi-package pin). A name
+        not among ``packages`` means the image is for the wrong software.
+        """
+        ref = (container or "").strip()
+        prefix = f"{QUAY_BIOCONTAINERS_PREFIX}/"
+        if not ref.startswith(prefix):
+            return False
+        image_name = ref[len(prefix) :].split(":", 1)[0].lower()
+        if image_name.startswith("mulled-"):
+            return True
+        return image_name in {p.name.strip().lower() for p in packages}
 
     async def _container_tag_missing(self, container: Optional[str]) -> bool:
         """True only when ``container`` is positively verified absent from biocontainers.

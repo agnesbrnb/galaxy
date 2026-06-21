@@ -2439,6 +2439,36 @@ class TestCustomToolAgentReflection:
         assert present in response.metadata.get("tool_yaml", "")
 
     @pytest.mark.asyncio
+    async def test_container_name_only_overrides_present_biocontainer_for_wrong_package(self):
+        """A present biocontainer for the *wrong* package is overridden on a name-only
+        match -- e.g. a producer that picked ``r-base`` for a tool needing
+        ``r-ggplot2``/``r-readr``: the base image is real but lacks the packages, so
+        the name-only recommendation that has them wins."""
+        self.mock_config.inference_services = {
+            "custom_tool": {"quality_critic_enabled": False, "container_recommendation_enabled": True},
+        }
+        recommended = "quay.io/biocontainers/mulled-v2-abc:def-0"
+        recommender = _RecordingRecommender(_quay_recommendation(recommended, match_quality=MatchQuality.NAME_ONLY))
+        # r-base is a real, present biocontainer (verifier -> True) -- but for the
+        # wrong package.
+        present = "quay.io/biocontainers/r-base:4.1.0"
+        agent = CustomToolAgent(self.deps, recommender=recommender, tag_verifier=lambda c: c == present)
+        tool = _valid_tool().model_copy(update={"container": present})
+
+        with mock.patch.object(agent.agent, "run", return_value=_mock_run_result(tool)):
+            with mock.patch.object(
+                agent,
+                "_infer_packages",
+                new_callable=mock.AsyncMock,
+                return_value=[CondaPackage(name="r-ggplot2"), CondaPackage(name="r-readr")],
+            ):
+                response = await agent.process("Create a ggplot2 boxplot tool")
+
+        tool_yaml = response.metadata.get("tool_yaml", "")
+        assert recommended in tool_yaml
+        assert present not in tool_yaml
+
+    @pytest.mark.asyncio
     async def test_container_name_only_overrides_non_biocontainer(self):
         """A name-only match replaces a non-biocontainer image (rocker/ubuntu/...) with
         the verified biocontainer -- when resolution is on, an arbitrary registry image
