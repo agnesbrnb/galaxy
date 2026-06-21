@@ -63,6 +63,7 @@ from galaxy.agents import (
 )
 from galaxy.agents.base import truncate_message_history
 from galaxy.agents.custom_tool import (
+    _id_from_prior_yaml,
     CritiqueReport,
     ToolEdit,
 )
@@ -1925,6 +1926,49 @@ def _valid_tool(name: str = "Echo Tool") -> UserToolSource:
     )
 
 
+def test_strip_container_requirements_drops_redundant_container():
+    tool = UserToolSource.model_validate(
+        {
+            **_valid_tool().model_dump(by_alias=True),
+            "requirements": [
+                {"type": "container", "container": {"type": "docker", "container_id": "quay.io/x:1"}},
+                {"type": "resource", "cores_min": 2},
+            ],
+        }
+    )
+    stripped = CustomToolAgent._strip_container_requirements(tool)
+    # Top-level container is canonical and kept; the container requirement is gone,
+    # the resource requirement stays.
+    assert stripped.container == "quay.io/biocontainers/python:3.13"
+    assert [req.type for req in stripped.requirements or []] == ["resource"]
+
+
+def test_strip_container_requirements_noop_without_container_requirement():
+    tool = _valid_tool()
+    assert CustomToolAgent._strip_container_requirements(tool) is tool
+
+
+def test_stripped_tool_renders_without_duplicate_container():
+    # The producer can emit the image both as the top-level container and as a
+    # container requirement. _strip_container_requirements (run in _produce_tool) is
+    # the single guard; once applied, the rendered YAML carries no duplicate.
+    tool = UserToolSource.model_validate(
+        {
+            **_valid_tool().model_dump(by_alias=True),
+            "container": "quay.io/biocontainers/mulled-v2-abc:def-0",
+            "requirements": [
+                {"type": "container", "container": {"type": "docker", "container_id": "rocker/tidyverse:4.2.2"}},
+                {"type": "resource", "cores_min": 2},
+            ],
+        }
+    )
+    rendered = CustomToolAgent._render_tool_yaml(CustomToolAgent._strip_container_requirements(tool))
+    assert "container: quay.io/biocontainers/mulled-v2-abc:def-0" in rendered
+    assert "rocker/tidyverse" not in rendered
+    assert "type: container" not in rendered
+    assert "type: resource" in rendered
+
+
 def _mock_run_result(tool: UserToolSource) -> mock.Mock:
     result = mock.Mock()
     result.output = tool
@@ -2653,3 +2697,12 @@ class TestAgentConsistencyLiveLLM:
         assert response.content is not None
         assert len(response.content) > 0
         assert response.agent_type == "router"
+
+
+def test_id_from_prior_yaml_carries_valid_id_only():
+    # On a fix-in-place retry the model can drop the (schema-optional) id; we carry it
+    # from the previous response, but only when it is a pattern-valid id.
+    assert _id_from_prior_yaml("id: ggplot2_boxplot\nname: x") == "ggplot2_boxplot"
+    assert _id_from_prior_yaml("name: x\nversion: '1.0'") is None  # no id present
+    assert _id_from_prior_yaml('id: "9 bad id"\nname: x') is None  # fails TOOL_ID_PATTERN
+    assert _id_from_prior_yaml(": : [") is None  # malformed YAML

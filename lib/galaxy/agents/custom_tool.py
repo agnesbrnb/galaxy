@@ -45,9 +45,11 @@ from galaxy.tool_util.lint import lint_user_tool_source
 from galaxy.tool_util_models import (
     CondaPackage,
     format_validation_errors,
+    TOOL_ID_PATTERN,
     UserToolSource,
     UserToolSourceAuthoringView,
 )
+from galaxy.tool_util_models.tool_source import ContainerRequirement
 from .base import (
     ActionSuggestion,
     ActionType,
@@ -84,6 +86,23 @@ def _find_validation_error(exc: BaseException) -> Optional[ValidationError]:
         if isinstance(current, ValidationError):
             return current
         current = current.__cause__ or current.__context__
+    return None
+
+
+def _id_from_prior_yaml(prior_yaml: str) -> Optional[str]:
+    """Recover a valid tool ``id`` from a previous attempt's YAML.
+
+    The schema permits a null id, so on a fix-in-place retry the model sometimes drops
+    it (and then the linter rejects the tool for a missing id). Rather than fail, carry
+    the id from the previous response. Returns the prior id only when it's pattern-valid.
+    """
+    try:
+        prior = yaml.safe_load(prior_yaml)
+    except yaml.YAMLError:
+        return None
+    prior_id = prior.get("id") if isinstance(prior, dict) else None
+    if isinstance(prior_id, str) and re.match(TOOL_ID_PATTERN, prior_id):
+        return prior_id
     return None
 
 
@@ -478,7 +497,20 @@ class CustomToolAgent(BaseGalaxyAgent):
                 # The model authors against the slim view (no `tests`); promote to the
                 # full UserToolSource so linting, serialization, and storage operate on
                 # the canonical model. The view is a strict subset, so this never fails.
-                tool = UserToolSource.model_validate(authored.model_dump(by_alias=True))
+                authored_dict = authored.model_dump(by_alias=True)
+                if not authored_dict.get("id") and prior_yaml:
+                    # On a fix-in-place retry the model sometimes drops the (schema-optional)
+                    # id; carry it forward from the previous response so the lint doesn't
+                    # fail for a missing id.
+                    prior_id = _id_from_prior_yaml(prior_yaml)
+                    if prior_id:
+                        authored_dict["id"] = prior_id
+                tool = UserToolSource.model_validate(authored_dict)
+                # Weak models sometimes emit the image both as the top-level
+                # ``container`` and as a ``requirements`` container entry, producing a
+                # duplicate container definition; the top-level field is canonical, so
+                # drop the redundant requirement.
+                tool = self._strip_container_requirements(tool)
                 tool_yaml = self._render_tool_yaml(tool)
                 # Lint + an agent-side check that any script the command runs by name
                 # is actually materialized by a configfile (a common producer miss the
@@ -754,6 +786,20 @@ class CustomToolAgent(BaseGalaxyAgent):
             )
             return None
         return updated, self._render_tool_yaml(updated)
+
+    @staticmethod
+    def _strip_container_requirements(tool: UserToolSource) -> UserToolSource:
+        """Drop any ``container``-type requirement, keeping only the top-level ``container``.
+
+        ``UserToolSource`` persists a single ``container`` string; a
+        ``ContainerRequirement`` in ``requirements`` duplicates it. Returns the tool
+        unchanged when there is no such requirement.
+        """
+        requirements = tool.requirements or []
+        filtered = [req for req in requirements if not isinstance(req, ContainerRequirement)]
+        if len(filtered) == len(requirements):
+            return tool
+        return tool.model_copy(update={"requirements": filtered})
 
     @staticmethod
     def _render_tool_yaml(tool: UserToolSource) -> str:
