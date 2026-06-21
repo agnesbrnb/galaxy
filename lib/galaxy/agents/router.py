@@ -50,6 +50,9 @@ class QueryRouterAgent(BaseGalaxyAgent):
 
     agent_type = AgentType.ROUTER
     _handoff_context: Optional[dict[str, Any]] = None
+    # The current turn's original user query, stashed during ``process`` so a handoff
+    # can forward what the user actually asked (see the custom_tool handoff).
+    _original_query: Optional[str] = None
 
     # The current message drives routing, plus the most recent conversation turn(s) so an
     # elliptical follow-up ("what about a workflow for this?", or the answer to a clarifying
@@ -375,7 +378,13 @@ class QueryRouterAgent(BaseGalaxyAgent):
             Args:
                 request: Description of the tool to create
             """
-            return await self._execute_handoff(ctx, AgentType.CUSTOM_TOOL, request)
+            # The producer designs the tool; the router must not. Weak routers balloon
+            # a one-line request into a full implementation spec (argparse scaffolding,
+            # example scripts, version pins) that the producer then faithfully -- and
+            # often wrongly -- implements. Forward the user's actual query instead; the
+            # producer still receives conversation_history via the handoff context.
+            handoff_request = self._original_query or request
+            return await self._execute_handoff(ctx, AgentType.CUSTOM_TOOL, handoff_request)
 
         return hand_off_to_custom_tool
 
@@ -572,7 +581,9 @@ class QueryRouterAgent(BaseGalaxyAgent):
                 log.info("Router: processing query with no conversation history")
 
             previous_handoff_context = self._handoff_context
+            previous_query = self._original_query
             self._handoff_context = context.copy() if context else {}
+            self._original_query = query
             try:
                 # Fold the active interface context (the tool/dataset/etc. the user is
                 # viewing) into the prompt for queries the router answers directly --
@@ -581,6 +592,7 @@ class QueryRouterAgent(BaseGalaxyAgent):
                 result = await self._run_with_retry(prompt, message_history=message_history)
             finally:
                 self._handoff_context = previous_handoff_context
+                self._original_query = previous_query
             content = extract_result_content(result)
 
             try:

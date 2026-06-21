@@ -538,6 +538,34 @@ class TestAgentUnitMocked:
         assert "History summary" in response
 
     @pytest.mark.asyncio
+    async def test_custom_tool_handoff_forwards_original_query_not_elaboration(self):
+        # The router must not design the tool: the producer should see the user's
+        # actual request, not the router's ballooned implementation spec.
+        router = QueryRouterAgent(self.deps)
+        router._handoff_context = {}
+        router._original_query = "Write a tool that uses ggplot2 to make a boxplot; put the R script in a configfile."
+
+        # In-memory recording fake at the get_agent seam: record the request the
+        # producer actually receives so we assert on observed state, not call args.
+        class RecordingAgent:
+            received_request: Optional[str] = None
+
+            async def process(self, request, context=None):
+                self.received_request = request
+                return AgentResponse(content="tool created", confidence=ConfidenceLevel.HIGH, agent_type="custom_tool")
+
+        fake_custom_tool = RecordingAgent()
+        self.deps.get_agent = MagicMock(return_value=fake_custom_tool)
+        ctx = SimpleNamespace(deps=self.deps)
+
+        handoff = router._create_custom_tool_handoff()
+        # The router LLM passes an over-specified request (full argparse spec); it must be ignored.
+        await handoff(ctx, "Create a tool. Read args via commandArgs(trailingOnly=TRUE); arg[1]=infile; ...")
+
+        assert fake_custom_tool.received_request == router._original_query
+        assert "commandArgs" not in (fake_custom_tool.received_request or "")
+
+    @pytest.mark.asyncio
     async def test_router_rejects_prompt_injection_query(self):
         router = QueryRouterAgent(self.deps)
 
