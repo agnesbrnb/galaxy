@@ -17,9 +17,9 @@ import {
     faPlay,
     faSitemap,
     faTable,
+    faTrain,
     faUpload,
-    faWrench,
-} from "@fortawesome/free-solid-svg-icons";
+    faWrench} from "@fortawesome/free-solid-svg-icons";
 
 import { ACTIVITY_LABELS } from "@/components/Page/constants";
 import type { Activity } from "@/stores/activityStoreTypes";
@@ -91,6 +91,19 @@ export const defaultActivities = [
         title: "Workflows",
         to: "/workflows/list",
         tooltip: "Search and run workflows",
+        visible: true,
+    },
+    {
+        anonymous: false,
+        description: "Displays all job runs.",
+        icon: faTrain,
+        id: "jobs",
+        mutable: false,
+        optional: false,
+        panel: true,
+        title: "Jobs",
+        to: null,
+        tooltip: "Show all job runs",
         visible: true,
     },
     {
