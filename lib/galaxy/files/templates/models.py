@@ -44,6 +44,7 @@ FileSourceTemplateType = Literal[
     "dropbox",
     "googledrive",
     "onedrive",
+    "opensilex",
     "elabftw",
     "inveniordm",
     "zenodo",
@@ -96,7 +97,9 @@ class DropboxFileSourceConfiguration(OAuth2FileSourceConfiguration, StrictModel)
     oauth2_access_token: str
 
 
-class GoogleDriveFileSourceTemplateConfiguration(OAuth2TemplateConfiguration, StrictModel):
+class GoogleDriveFileSourceTemplateConfiguration(
+    OAuth2TemplateConfiguration, StrictModel
+):
     type: Literal["googledrive"]
     writable: Union[bool, TemplateExpansion] = False
     oauth2_client_id: Union[str, TemplateExpansion]
@@ -494,6 +497,20 @@ class OmeroFileSourceConfiguration(StrictModel):
     writable: bool = False
 
 
+class OpenSILEXFileSourceTemplateConfiguration(StrictModel):
+    type: Literal["opensilex"]
+    base_url: Union[str, TemplateExpansion]
+    api_key: Union[str, TemplateExpansion]
+    template_start: Optional[str] = None
+    template_end: Optional[str] = None
+
+
+class OpenSILEXFileSourceConfiguration(StrictModel):
+    type: Literal["opensilex"]
+    base_url: str
+    api_key: str
+
+
 FileSourceTemplateConfiguration = Annotated[
     Union[
         PosixFileSourceTemplateConfiguration,
@@ -506,6 +523,7 @@ FileSourceTemplateConfiguration = Annotated[
         WebdavFileSourceTemplateConfiguration,
         DropboxFileSourceTemplateConfiguration,
         GoogleDriveFileSourceTemplateConfiguration,
+        OpenSILEXFileSourceTemplateConfiguration,
         OneDriveFileSourceTemplateConfiguration,
         eLabFTWFileSourceTemplateConfiguration,
         InvenioFileSourceTemplateConfiguration,
@@ -534,6 +552,7 @@ FileSourceConfiguration = Annotated[
         WebdavFileSourceConfiguration,
         DropboxFileSourceConfiguration,
         GoogleDriveFileSourceConfiguration,
+        OpenSILEXFileSourceConfiguration,
         OneDriveFileSourceConfiguration,
         eLabFTWFileSourceConfiguration,
         InvenioFileSourceConfiguration,
@@ -604,12 +623,16 @@ def template_to_configuration(
 ) -> FileSourceConfiguration:
     configuration_template = template.configuration
     populate_default_variables(template.variables, variables)
-    raw_config = expand_raw_config(configuration_template, variables, secrets, user_details, environment)
+    raw_config = expand_raw_config(
+        configuration_template, variables, secrets, user_details, environment
+    )
     merge_implicit_parameters(raw_config, implicit)
     return to_configuration_object(raw_config)
 
 
-TypesToConfigurationClasses: dict[FileSourceTemplateType, type[FileSourceConfiguration]] = {
+TypesToConfigurationClasses: dict[
+    FileSourceTemplateType, type[FileSourceConfiguration]
+] = {
     "ftp": FtpFileSourceConfiguration,
     "posix": PosixFileSourceConfiguration,
     "s3fs": S3FSFileSourceConfiguration,
@@ -620,6 +643,7 @@ TypesToConfigurationClasses: dict[FileSourceTemplateType, type[FileSourceConfigu
     "webdav": WebdavFileSourceConfiguration,
     "dropbox": DropboxFileSourceConfiguration,
     "googledrive": GoogleDriveFileSourceConfiguration,
+    "opensilex": OpenSILEXFileSourceConfiguration,
     "onedrive": OneDriveFileSourceConfiguration,
     "elabftw": eLabFTWFileSourceConfiguration,
     "inveniordm": InvenioFileSourceConfiguration,
@@ -660,16 +684,24 @@ def get_oauth2_config(template: FileSourceTemplate) -> OAuth2Configuration:
     return get_oauth2_config_from(template, OAUTH2_CONFIGURED_SOURCES)
 
 
-def get_oauth2_config_or_none(template: FileSourceTemplate) -> Optional[OAuth2Configuration]:
+def get_oauth2_config_or_none(
+    template: FileSourceTemplate,
+) -> Optional[OAuth2Configuration]:
     if template.configuration.type not in OAUTH2_CONFIGURED_SOURCES:
         return None
     return get_oauth2_config(template)
 
 
-def to_configuration_object(configuration_dict: dict[str, Any]) -> FileSourceConfiguration:
+def to_configuration_object(
+    configuration_dict: dict[str, Any],
+) -> FileSourceConfiguration:
     if "type" not in configuration_dict:
-        raise KeyError("Configuration objects require a file source 'type' key, none found.")
+        raise KeyError(
+            "Configuration objects require a file source 'type' key, none found."
+        )
     object_store_type = configuration_dict["type"]
     if object_store_type not in TypesToConfigurationClasses:
-        raise ValueError(f"Unknown file source type found in raw configuration dictionary ({object_store_type}).")
+        raise ValueError(
+            f"Unknown file source type found in raw configuration dictionary ({object_store_type})."
+        )
     return TypesToConfigurationClasses[object_store_type](**configuration_dict)

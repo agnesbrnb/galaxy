@@ -1,0 +1,24 @@
+- id: opensilex
+  version: 0
+  name: OpenSILEX
+  description: |
+      [OpenSILEX](https://www.opensilex.org) is an ontology-driven IS developed at INRAE with multiple instances.
+  variables:
+        base_url:
+            label: URL to an OpenSILEX instance
+            type: string
+            default: https://siduri.migale.inrae.fr
+            optional: false
+            help: |
+                Provide the URL to the OpenSILEX instance you want to connect to (Siduri, PHIS, Sixtine...)
+  secrets:
+      api_key:
+          label: OpenSILEX authentication token to an instance
+          optional: false
+          help: |
+              Authentication token can be found in cookies from an OpenSILEX instance.
+              API key is a work in progress.
+  configuration:
+      type: opensilex
+      base_url: "{{ variables.base_url }}"
+      api_key: "{{ secrets.api_key }}"

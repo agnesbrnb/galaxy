@@ -36,6 +36,10 @@ export const templateTypes: FileSourceTypesDetail = {
         icon: faNetworkWired,
         message: "This is a repository plugin that connects with MaveDB score set files.",
     },
+    opensilex: {
+        icon: faCloud,
+        message: "This is a repository plugin that connects with an OpenSILEX instance."
+    },
     onedrive: {
         icon: faCloud,
         message: "This is a repository plugin that connects with Microsoft OneDrive.",

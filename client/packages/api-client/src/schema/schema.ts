@@ -13111,6 +13111,7 @@ export interface components {
                 | "huggingface"
                 | "iiif"
                 | "mavedb"
+                | "opensilex"
                 | "omero"
                 | "ssh";
             /** Variables */
@@ -25420,6 +25421,7 @@ export interface components {
                 | "huggingface"
                 | "iiif"
                 | "mavedb"
+                | "opensilex"
                 | "omero"
                 | "ssh";
             /** Uri Root */
