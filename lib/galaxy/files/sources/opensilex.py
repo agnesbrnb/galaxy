@@ -124,7 +124,7 @@ class OpenSILEXFilesSource(BaseFilesSource[OpenSILEXFileSourceTemplateConfigurat
         params: dict[str, Any] = {"experiments": experiment_uri}
         if query:
             params["name"] = query
-        datafiles = self._get_all_results(config, "/core/datafiles/by_targets", params)
+        datafiles = self._get_all_results(config, "/core/datafiles", params)
         parent = f"{self._encode(project_uri)}/{self._encode(experiment_uri)}"
         entries: list[AnyRemoteEntry] = []
         for datafile in datafiles:
