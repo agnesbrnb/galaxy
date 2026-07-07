@@ -154,7 +154,7 @@ class OpenSILEXFilesSource(BaseFilesSource[OpenSILEXFileSourceTemplateConfigurat
             raise exceptions.ObjectNotFound(f"Could not determine a datafile to download from [{source_path}].")
         datafile_uri = segments[-1]
         url = self._api_url(context.config, f"/core/datafiles/{self._encode(datafile_uri)}")
-        req = urllib.request.Request(url, headers=self._headers(context.config))
+        req = urllib.request.Request(url, headers=self._headers(context.config, accept="application/octet-stream"))
         try:
             with urllib.request.urlopen(req) as response, open(native_path, "wb") as out:
                 shutil.copyfileobj(response, out)
@@ -183,10 +183,12 @@ class OpenSILEXFilesSource(BaseFilesSource[OpenSILEXFileSourceTemplateConfigurat
                 url = f"{url}?{urllib.parse.urlencode(clean, doseq=True)}"
         return url
 
-    def _headers(self, config: OpenSILEXFileSourceConfiguration) -> dict[str, str]:
+    def _headers(
+        self, config: OpenSILEXFileSourceConfiguration, accept: str = "application/json"
+    ) -> dict[str, str]:
         return {
             "Authorization": f"{TOKEN_PREFIX}{config.api_key}",
-            "Accept": "application/json",
+            "Accept": accept,
         }
 
     def _api_get_json(
